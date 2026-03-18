@@ -149,6 +149,15 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+            {{- if .Values.postgresql.ha.enabled }}
+            - name: REPLICATION_USER
+              value: {{ .Values.postgresql.ha.replicationUser | quote }}
+            - name: REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "asibot.fullname" . }}-replication
+                  key: REPLICATION_PASSWORD
+            {{- end }}
           resources:
             {{- toYaml .Values.postgresql.resources | nindent 12 }}
           readinessProbe:
@@ -167,6 +176,25 @@ spec:
           volumeMounts:
             - name: pg-data
               mountPath: /var/lib/postgresql/data
+            {{- if .Values.postgresql.ha.enabled }}
+            - name: postgres-ha-config
+              mountPath: /etc/postgresql/extra
+              readOnly: true
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d/init-replication-user.sh
+              subPath: init-replication-user.sh
+              readOnly: true
+            {{- end }}
+      {{- if .Values.postgresql.ha.enabled }}
+      volumes:
+        - name: postgres-ha-config
+          configMap:
+            name: {{ include "asibot.fullname" . }}-postgres-ha
+        - name: init-scripts
+          configMap:
+            name: {{ include "asibot.fullname" . }}-postgres-ha
+            defaultMode: 0755
+      {{- end }}
   volumeClaimTemplates:
     - metadata:
         name: pg-data

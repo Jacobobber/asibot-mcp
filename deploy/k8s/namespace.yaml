@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: asibot
+  labels:
+    app.kubernetes.io/name: asibot
+    app.kubernetes.io/part-of: asibot

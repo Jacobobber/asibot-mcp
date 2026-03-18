@@ -1,0 +1,64 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: asibot-config
+  namespace: asibot
+  labels:
+    app.kubernetes.io/name: asibot
+    app.kubernetes.io/component: server
+data:
+  ASIBOT_TRANSPORT: "streamable-http"
+  ASIBOT_HOST: "0.0.0.0"
+  ASIBOT_PORT: "8080"
+  ASIBOT_DASHBOARD_PORT: "8081"
+  ASIBOT_DASHBOARD_ENABLED: "true"
+  ASIBOT_DATA_DIR: "/data"
+  ASIBOT_ALLOW_INSECURE_HTTP: "true"  # TLS terminated at Ingress
+  ASIBOT_PG_POOL_MIN_SIZE: "10"
+  ASIBOT_PG_POOL_MAX_SIZE: "100"
+  ASIBOT_SESSION_TTL: "3600"
+  ASIBOT_ABSOLUTE_SESSION_TTL: "28800"
+  ASIBOT_SESSION_CACHE_SIZE: "1000"
+  ASIBOT_MAX_CONCURRENT_REQUESTS: "2000"
+  ASIBOT_MAX_CONCURRENT_PER_USER: "10"
+  ASIBOT_MAX_CONCURRENT_PER_SERVICE: "200"
+  ASIBOT_MAX_CONCURRENT_SETUPS: "100"
+  ASIBOT_POOL_MAX_CONNECTIONS: "20"
+  ASIBOT_POOL_MAX_CLIENTS: "200"
+  ASIBOT_METRICS_ENABLED: "true"
+  ASIBOT_METRICS_HOST: "0.0.0.0"
+  ASIBOT_METRICS_PORT: "9090"
+  ASIBOT_AUDIT_RETENTION_DAYS: "365"
+  ASIBOT_GLOBAL_RATE_LIMIT_DEFAULT: "200"
+  ASIBOT_PER_USER_RATE_LIMIT_DEFAULT: "30"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgbouncer-config
+  namespace: asibot
+  labels:
+    app.kubernetes.io/name: asibot
+    app.kubernetes.io/component: pgbouncer
+data:
+  pgbouncer.ini: |
+    [databases]
+    asibot = host=postgres port=5432 dbname=asibot
+
+    [pgbouncer]
+    listen_addr = 0.0.0.0
+    listen_port = 6432
+    auth_type = md5
+    auth_file = /etc/pgbouncer/userlist.txt
+    pool_mode = transaction
+    max_client_conn = 1000
+    default_pool_size = 50
+    min_pool_size = 10
+    reserve_pool_size = 10
+    reserve_pool_timeout = 3
+    server_lifetime = 3600
+    server_idle_timeout = 600
+    log_connections = 0
+    log_disconnections = 0
+    stats_period = 60
+    admin_users = asibot

@@ -1,0 +1,212 @@
+{{- if and .Values.postgresql.enabled .Values.postgresql.ha.enabled }}
+#
+# PostgreSQL HA: read-replica StatefulSet + replication ConfigMap
+#
+# NOTE: For production deployments at 1000+ employees, a managed PostgreSQL
+# service (AWS RDS, Google Cloud SQL, Azure Database for PostgreSQL) is
+# strongly recommended over self-managed replication. This template provides
+# a basic streaming replication setup for environments where managed services
+# are not available.
+#
+
+# -------------------------------------------------------------------
+# ConfigMap: PostgreSQL replication configuration
+# -------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "asibot.fullname" . }}-postgres-ha
+  labels:
+    {{- include "asibot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+data:
+  # Appended to the primary's pg_hba.conf to allow replication connections
+  pg_hba_replication.conf: |
+    # Allow replication connections from the pod network
+    host replication {{ .Values.postgresql.ha.replicationUser }} 0.0.0.0/0 md5
+    host replication {{ .Values.postgresql.ha.replicationUser }} ::/0 md5
+
+  # Primary postgresql.conf overrides for streaming replication
+  postgresql_primary.conf: |
+    wal_level = replica
+    max_wal_senders = 10
+    wal_keep_size = '512MB'
+    hot_standby = on
+    archive_mode = on
+    archive_command = '/bin/true'
+
+  # Replica postgresql.conf overrides
+  postgresql_replica.conf: |
+    hot_standby = on
+    hot_standby_feedback = on
+
+  # Init script that creates the replication user on the primary
+  init-replication-user.sh: |
+    #!/bin/bash
+    set -e
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+      DO \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${REPLICATION_USER}') THEN
+          CREATE ROLE ${REPLICATION_USER} WITH REPLICATION LOGIN PASSWORD '${REPLICATION_PASSWORD}';
+        END IF;
+      END
+      \$\$;
+    EOSQL
+    # Append replication entries to pg_hba.conf
+    cat /etc/postgresql/extra/pg_hba_replication.conf >> "$PGDATA/pg_hba.conf"
+    # Append primary WAL settings
+    cat /etc/postgresql/extra/postgresql_primary.conf >> "$PGDATA/postgresql.conf"
+    # Reload so new settings take effect
+    pg_ctl reload -D "$PGDATA"
+
+---
+# -------------------------------------------------------------------
+# Service: headless service for read replicas
+# -------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "asibot.fullname" . }}-postgres-replicas
+  labels:
+    {{- include "asibot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres-replica
+spec:
+  clusterIP: None
+  selector:
+    {{- include "asibot.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres-replica
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+# -------------------------------------------------------------------
+# StatefulSet: PostgreSQL read replicas (streaming replication)
+# -------------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "asibot.fullname" . }}-postgres-replica
+  labels:
+    {{- include "asibot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres-replica
+spec:
+  serviceName: {{ include "asibot.fullname" . }}-postgres-replicas
+  replicas: {{ .Values.postgresql.ha.replicas }}
+  selector:
+    matchLabels:
+      {{- include "asibot.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres-replica
+  template:
+    metadata:
+      labels:
+        {{- include "asibot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres-replica
+    spec:
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        # pg_basebackup from the primary to initialize the replica data directory
+        - name: pg-basebackup
+          image: {{ .Values.postgresql.image }}
+          command:
+            - bash
+            - -c
+            - |
+              if [ -s "$PGDATA/PG_VERSION" ]; then
+                echo "Data directory already initialized, skipping basebackup."
+                exit 0
+              fi
+              until pg_isready -h {{ include "asibot.fullname" . }}-postgres -U asibot; do
+                echo "Waiting for primary..."
+                sleep 2
+              done
+              pg_basebackup \
+                -h {{ include "asibot.fullname" . }}-postgres \
+                -U {{ .Values.postgresql.ha.replicationUser }} \
+                -D "$PGDATA" \
+                -Fp -Xs -P -R
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "asibot.fullname" . }}-replication
+                  key: REPLICATION_PASSWORD
+          volumeMounts:
+            - name: pg-replica-data
+              mountPath: /var/lib/postgresql/data
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresql.image }}
+          args: ["-c", "config_file=/etc/postgresql/extra/postgresql_replica.conf"]
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: asibot
+            - name: POSTGRES_USER
+              value: asibot
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "asibot.secretName" . }}
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "asibot"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "asibot"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            - name: pg-replica-data
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-ha-config
+              mountPath: /etc/postgresql/extra
+              readOnly: true
+      volumes:
+        - name: postgres-ha-config
+          configMap:
+            name: {{ include "asibot.fullname" . }}-postgres-ha
+  volumeClaimTemplates:
+    - metadata:
+        name: pg-replica-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.postgresql.storageClass }}
+        storageClassName: {{ .Values.postgresql.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.storage }}
+
+---
+# -------------------------------------------------------------------
+# Secret: replication user credentials
+# -------------------------------------------------------------------
+{{- if not .Values.existingSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "asibot.fullname" . }}-replication
+  labels:
+    {{- include "asibot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+type: Opaque
+stringData:
+  REPLICATION_USER: {{ .Values.postgresql.ha.replicationUser | quote }}
+  REPLICATION_PASSWORD: {{ .Values.postgresql.ha.replicationPassword | quote }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer
+  namespace: asibot
+  labels:
+    app.kubernetes.io/name: asibot
+    app.kubernetes.io/component: pgbouncer
+spec:
+  selector:
+    app.kubernetes.io/name: asibot
+    app.kubernetes.io/component: pgbouncer
+  ports:
+    - port: 6432
+      targetPort: 6432
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+  namespace: asibot
+  labels:
+    app.kubernetes.io/name: asibot
+    app.kubernetes.io/component: pgbouncer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: asibot
+      app.kubernetes.io/component: pgbouncer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: asibot
+        app.kubernetes.io/component: pgbouncer
+    spec:
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:latest
+          ports:
+            - containerPort: 6432
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: pgbouncer-config
+              mountPath: /etc/pgbouncer/pgbouncer.ini
+              subPath: pgbouncer.ini
+              readOnly: true
+            - name: pgbouncer-userlist
+              mountPath: /etc/pgbouncer/userlist.txt
+              subPath: userlist.txt
+              readOnly: true
+      volumes:
+        - name: pgbouncer-config
+          configMap:
+            name: pgbouncer-config
+        - name: pgbouncer-userlist
+          secret:
+            secretName: pgbouncer-userlist

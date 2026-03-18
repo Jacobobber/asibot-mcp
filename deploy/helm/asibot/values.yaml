@@ -174,7 +174,28 @@ strategy:
     maxSurge: 1
     maxUnavailable: 0
 
-# -- PostgreSQL sub-chart settings (bundled single-instance for dev/test)
+# -- PodDisruptionBudget: prevents Kubernetes from evicting too many pods
+# during voluntary disruptions (node drains, upgrades, etc.).
+# With minAvailable: 2 and replicaCount >= 3, at least 2 pods always remain
+# available during rolling updates and node maintenance.
+podDisruptionBudget:
+  # -- Enable PodDisruptionBudget for the Asibot server deployment
+  enabled: true
+  # -- Minimum number of pods that must remain available during disruptions
+  minAvailable: 2
+
+# -- PostgreSQL settings (bundled single-instance for dev/test)
+#
+# IMPORTANT: For production deployments serving 1000+ employees, we strongly
+# recommend using a managed PostgreSQL service instead of this bundled instance:
+#   - AWS:   Amazon RDS for PostgreSQL or Aurora PostgreSQL
+#   - GCP:   Cloud SQL for PostgreSQL
+#   - Azure: Azure Database for PostgreSQL - Flexible Server
+# Managed services provide automated failover, backups, monitoring, and
+# patching with significantly less operational burden than self-managed HA.
+#
+# Set postgresql.enabled=false and provide a DATABASE_URL via secrets.databaseUrl
+# when using a managed service.
 postgresql:
   # -- Deploy bundled PostgreSQL StatefulSet
   enabled: true
@@ -189,6 +210,42 @@ postgresql:
     limits:
       cpu: "2"
       memory: 2Gi
+
+  # -- High Availability: PostgreSQL streaming replication
+  #
+  # Enables read replicas via PostgreSQL native streaming replication.
+  # The primary remains the single-writer; replicas serve read-only queries.
+  #
+  # WARNING: Self-managed PostgreSQL HA requires careful operational procedures
+  # for failover, monitoring, and backup. For 1000+ employee production
+  # deployments, a managed PostgreSQL service (see above) is the preferred
+  # approach. Enable this only if managed services are not available.
+  ha:
+    # -- Enable PostgreSQL HA (streaming replication with read replicas)
+    enabled: false
+    # -- Number of read replicas
+    replicas: 2
+    # -- PostgreSQL replication user name
+    replicationUser: "replicator"
+    # -- PostgreSQL replication user password (REQUIRED if ha.enabled=true;
+    #    provide via --set postgresql.ha.replicationPassword=<secret>)
+    replicationPassword: ""
+    # -- Maximum acceptable replication lag in bytes before replica is
+    #    considered unhealthy. Default 10MB (10485760 bytes).
+    #
+    #    Monitor replication lag on the primary with:
+    #      SELECT client_addr,
+    #             state,
+    #             pg_wal_lsn_diff(pg_current_wal_lsn(), sent_lsn) AS send_lag_bytes,
+    #             pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS replay_lag_bytes
+    #      FROM pg_stat_replication;
+    #
+    #    Or expose it as a Prometheus metric using postgres_exporter:
+    #      pg_stat_replication_pg_wal_lsn_diff (gauge)
+    #
+    #    Alert when replay_lag_bytes exceeds maxLagBytes for sustained periods.
+    maxLagBytes: 10485760
+
 
 # -- PgBouncer settings
 pgbouncer:
