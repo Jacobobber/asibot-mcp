@@ -17,7 +17,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import audit, auth, db, http_pool, metrics, migrate, token_store, user_session, validation
 from asibot.connectors import microsoft
-from asibot.config import settings
+from asibot.config import settings, validate_for_production
 from asibot.connectors import registry
 
 logging.basicConfig(
@@ -1336,6 +1336,11 @@ def _start_dashboard() -> None:
 
 def main() -> None:
     settings.ensure_dirs()
+
+    # Log production warnings (non-fatal)
+    for warning in validate_for_production(settings):
+        logger.warning("CONFIG: %s", warning)
+
     _setup_connectors()
     metrics.start_metrics_server(
         port=settings.metrics_port,
