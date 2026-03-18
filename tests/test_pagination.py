@@ -634,40 +634,14 @@ class TestGetS2SToken:
     @pytest.mark.asyncio
     async def test_cached_token_returned(self):
         """Cached token is returned without making HTTP request."""
-        from asibot import token_store
+        from asibot.distributed_cache import InMemoryCache
+        import asibot.distributed_cache as dc
 
-        token_store._s2s_token_cache.clear()
-        token_store._s2s_token_cache["test:cid"] = ("cached_token", time.time() + 3600)
-        token = await token_store.get_s2s_token(
-            cache_key="test:cid",
-            token_url="https://auth.example.com/token",
-            grant_data={"grant_type": "client_credentials"},
-            auth=("cid", "secret"),
-            service_name="Test",
-        )
-        assert token == "cached_token"
-        token_store._s2s_token_cache.clear()
-
-    @pytest.mark.asyncio
-    async def test_expired_token_refetched(self):
-        """Expired token triggers a new fetch."""
-        from unittest.mock import patch
-
-        from asibot import token_store
-
-        token_store._s2s_token_cache.clear()
-        token_store._s2s_token_cache["test:cid"] = ("old_token", time.time() - 100)
-
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"access_token": "new_token", "expires_in": 3600}
-        mock_resp.raise_for_status.return_value = None
-
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_resp
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("asibot.token_store.httpx.AsyncClient", return_value=mock_client):
+        original = dc._cache
+        dc._cache = InMemoryCache()
+        try:
+            await dc._cache.put_s2s_token("test:cid", "cached_token", time.time() + 3600)
+            from asibot import token_store
             token = await token_store.get_s2s_token(
                 cache_key="test:cid",
                 token_url="https://auth.example.com/token",
@@ -675,42 +649,43 @@ class TestGetS2SToken:
                 auth=("cid", "secret"),
                 service_name="Test",
             )
-        assert token == "new_token"
-        assert token_store._s2s_token_cache["test:cid"][0] == "new_token"
-        token_store._s2s_token_cache.clear()
+            assert token == "cached_token"
+        finally:
+            dc._cache = original
 
     @pytest.mark.asyncio
-    async def test_cache_eviction(self):
-        """Cache evicts oldest entries when exceeding max size."""
+    async def test_expired_token_refetched(self):
+        """Expired token triggers a new fetch."""
         from unittest.mock import patch
+        from asibot.distributed_cache import InMemoryCache
+        import asibot.distributed_cache as dc
 
-        from asibot import token_store
+        original = dc._cache
+        dc._cache = InMemoryCache()
+        try:
+            await dc._cache.put_s2s_token("test:cid", "old_token", time.time() - 100)
 
-        token_store._s2s_token_cache.clear()
-        # Fill cache to max
-        for i in range(token_store._S2S_TOKEN_CACHE_MAX):
-            token_store._s2s_token_cache[f"key:{i}"] = (f"token_{i}", time.time() + 3600)
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"access_token": "new_token", "expires_in": 3600}
+            mock_resp.raise_for_status.return_value = None
 
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"access_token": "overflow_token", "expires_in": 3600}
-        mock_resp.raise_for_status.return_value = None
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_resp
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_resp
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("asibot.token_store.httpx.AsyncClient", return_value=mock_client):
-            token = await token_store.get_s2s_token(
-                cache_key="new:key",
-                token_url="https://auth.example.com/token",
-                grant_data={"grant_type": "client_credentials"},
-                auth=("cid", "secret"),
-                service_name="Test",
-            )
-        assert token == "overflow_token"
-        assert len(token_store._s2s_token_cache) == token_store._S2S_TOKEN_CACHE_MAX
-        # Oldest key should be evicted
-        assert "key:0" not in token_store._s2s_token_cache
-        assert "new:key" in token_store._s2s_token_cache
-        token_store._s2s_token_cache.clear()
+            from asibot import token_store
+            with patch("asibot.token_store.httpx.AsyncClient", return_value=mock_client):
+                token = await token_store.get_s2s_token(
+                    cache_key="test:cid",
+                    token_url="https://auth.example.com/token",
+                    grant_data={"grant_type": "client_credentials"},
+                    auth=("cid", "secret"),
+                    service_name="Test",
+                )
+            assert token == "new_token"
+            cached = await dc._cache.get_s2s_token("test:cid")
+            assert cached is not None
+            assert cached[0] == "new_token"
+        finally:
+            dc._cache = original
