@@ -7,6 +7,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_offset
 
 logger = logging.getLogger(__name__)
 API = "https://api.paylocity.com/api/v2"
@@ -55,19 +56,23 @@ class PaylocityConnector(Connector):
             except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
                 return token_store.format_api_error("Paylocity", "authenticate", e)
             company_id = creds["company_id"]
-            r, err = await token_store.safe_request(
-                client, "GET", f"{API}/companies/{company_id}/employees",
+            pages = paginate_offset(
+                client, f"{API}/companies/{company_id}/employees",
                 service="Paylocity", action="list employees",
+                params={},
+                results_key=None,
+                page_size_param="pagesize",
+                offset_param="pagenumber",
+                offset_start=1,
+                offset_step=1,
+                page_size=min(limit, 100),
                 headers={"Authorization": f"Bearer {token}"},
-                params={"pagesize": limit},
             )
-            if err:
-                return err
-            employees = r.json()
+            employees = await collect(pages, limit)
             if not employees:
                 return "No employees found."
             lines = []
-            for emp in employees[:limit]:
+            for emp in employees:
                 eid = emp.get("employeeId", "?")
                 first = emp.get("firstName", "")
                 last = emp.get("lastName", "")

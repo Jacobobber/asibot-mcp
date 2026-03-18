@@ -8,6 +8,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_offset
 
 logger = logging.getLogger(__name__)
 
@@ -59,14 +60,17 @@ class ConfluenceConnector(Connector):
             if err:
                 return err
             cql = query if "=" in query else f'text ~ "{query}"'
-            r, err = await token_store.safe_request(
-                client, "GET", "/content/search",
+            pages = paginate_offset(
+                client, "/content/search",
                 service="Confluence", action="search",
-                params={"cql": cql, "limit": limit, "expand": "space"},
+                params={"cql": cql, "expand": "space"},
+                results_key="results",
+                page_size_param="limit",
+                offset_param="start",
+                offset_start=0,
+                page_size=min(limit, 100),
             )
-            if err:
-                return err
-            results = r.json().get("results", [])
+            results = await collect(pages, limit)
             if not results:
                 return "No pages found."
             lines = []
@@ -117,14 +121,17 @@ class ConfluenceConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "read")
             if err:
                 return err
-            r, err = await token_store.safe_request(
-                client, "GET", "/space",
+            pages = paginate_offset(
+                client, "/space",
                 service="Confluence", action="list spaces",
-                params={"limit": limit, "type": "global"},
+                params={"type": "global"},
+                results_key="results",
+                page_size_param="limit",
+                offset_param="start",
+                offset_start=0,
+                page_size=min(limit, 100),
             )
-            if err:
-                return err
-            spaces = r.json().get("results", [])
+            spaces = await collect(pages, limit)
             if not spaces:
                 return "No spaces found."
             return "\n".join(f"{s.get('key', '?')}: {s.get('name', '?')} ({s.get('type', '?')})" for s in spaces)

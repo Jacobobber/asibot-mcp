@@ -12,6 +12,7 @@ from asibot import token_store, validation
 from asibot.config import settings
 from asibot.connectors import microsoft
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_odata
 
 logger = logging.getLogger(__name__)
 GRAPH = microsoft.GRAPH_BASE
@@ -153,10 +154,11 @@ class SharePointConnector(Connector):
                 return "No site configured."
             safe_path = quote(folder_path, safe="/")
             url = f"{GRAPH}/sites/{sid}/drive/root:/{safe_path}:/children" if folder_path else f"{GRAPH}/sites/{sid}/drive/root/children"
-            r, err = await token_store.safe_request(client, "GET", url, service="SharePoint", action="list files")
-            if err:
-                return err
-            items = r.json().get("value", [])
+            pages = paginate_odata(
+                client, url,
+                service="SharePoint", action="list files",
+            )
+            items = await collect(pages, 200)
             if not items:
                 return "No files found."
             return "\n".join(f"{'[folder]' if 'folder' in i else '[file]'} {i['name']}  ({i.get('size', 0):,} bytes)" for i in items)
@@ -195,10 +197,12 @@ class SharePointConnector(Connector):
             client, uid, err = await microsoft.require_graph_client(ctx, "sharepoint", "read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/sites", service="SharePoint", action="list sites", params={"search": query or "*"})
-            if err:
-                return err
-            sites = r.json().get("value", [])
+            pages = paginate_odata(
+                client, f"{GRAPH}/sites",
+                service="SharePoint", action="list sites",
+                params={"search": query or "*"},
+            )
+            sites = await collect(pages, 200)
             if not sites:
                 return "No sites found."
             return "\n\n".join(f"{s.get('displayName', '?')}\n  URL: {s.get('webUrl', '')}\n  ID: {s.get('id', '')}" for s in sites)

@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_odata
 
 logger = logging.getLogger(__name__)
 API = "https://platform.ringcentral.com/restapi/v1.0"
@@ -37,10 +38,14 @@ class RingCentralConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "ringcentral", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{API}/account/~/call-log", service="RingCentral", action="call log", params={"perPage": limit})
-            if err:
-                return err
-            records = r.json().get("records", [])
+            pages = paginate_odata(
+                client, f"{API}/account/~/call-log",
+                service="RingCentral", action="call log",
+                params={"perPage": min(limit, 100)},
+                results_key="records",
+                next_link_key="navigation.nextPage.uri",
+            )
+            records = await collect(pages, limit)
             if not records:
                 return "No call log entries found."
             lines = []
@@ -63,10 +68,14 @@ class RingCentralConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "ringcentral", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{API}/account/~/extension/~/message-store", service="RingCentral", action="messages", params={"perPage": limit})
-            if err:
-                return err
-            records = r.json().get("records", [])
+            pages = paginate_odata(
+                client, f"{API}/account/~/extension/~/message-store",
+                service="RingCentral", action="messages",
+                params={"perPage": min(limit, 100)},
+                results_key="records",
+                next_link_key="navigation.nextPage.uri",
+            )
+            records = await collect(pages, limit)
             if not records:
                 return "No messages found."
             lines = []

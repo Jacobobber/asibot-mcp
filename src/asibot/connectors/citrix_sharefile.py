@@ -7,6 +7,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_odata
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +57,12 @@ class ShareFileConnector(Connector):
                 base = _api(creds)
             except ValueError as e:
                 return str(e)
-            r, err = await token_store.safe_request(client, "GET", f"{base}/Items({folder_id})/Children", service="ShareFile", action="list items", params={"$top": limit})
-            if err:
-                return err
-            items = r.json().get("value", [])
+            pages = paginate_odata(
+                client, f"{base}/Items({folder_id})/Children",
+                service="ShareFile", action="list items",
+                params={"$top": min(limit, 100)},
+            )
+            items = await collect(pages, limit)
             if not items:
                 return "No items found in this folder."
             lines = []
@@ -91,10 +94,12 @@ class ShareFileConnector(Connector):
                 base = _api(creds)
             except ValueError as e:
                 return str(e)
-            r, err = await token_store.safe_request(client, "GET", f"{base}/Items/Search", service="ShareFile", action="search", params={"query": query, "$top": limit})
-            if err:
-                return err
-            results = r.json().get("value", r.json().get("Results", []))
+            pages = paginate_odata(
+                client, f"{base}/Items/Search",
+                service="ShareFile", action="search",
+                params={"query": query, "$top": min(limit, 100)},
+            )
+            results = await collect(pages, limit)
             if not results:
                 return "No results found."
             lines = []

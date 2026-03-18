@@ -10,6 +10,7 @@ from asibot import token_store, validation
 from asibot.config import settings
 from asibot.connectors import microsoft
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_odata
 
 logger = logging.getLogger(__name__)
 GRAPH = microsoft.GRAPH_BASE
@@ -47,10 +48,12 @@ class OutlookConnector(Connector):
             client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/messages", service="Outlook", action="search email", params={"$search": f'"{query}"', "$top": limit, "$select": "subject,from,receivedDateTime,bodyPreview"})
-            if err:
-                return err
-            msgs = r.json().get("value", [])
+            pages = paginate_odata(
+                client, f"{GRAPH}/me/messages",
+                service="Outlook", action="search email",
+                params={"$search": f'"{query}"', "$top": min(limit, 50), "$select": "subject,from,receivedDateTime,bodyPreview"},
+            )
+            msgs = await collect(pages, limit)
             if not msgs:
                 return "No emails found."
             lines = []
@@ -131,10 +134,12 @@ class OutlookConnector(Connector):
             client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/mailFolders/{folder}/messages", service="Outlook", action="recent emails", params={"$top": limit, "$orderby": "receivedDateTime desc", "$select": "subject,from,receivedDateTime,bodyPreview,isRead"})
-            if err:
-                return err
-            msgs = r.json().get("value", [])
+            pages = paginate_odata(
+                client, f"{GRAPH}/me/mailFolders/{folder}/messages",
+                service="Outlook", action="recent emails",
+                params={"$top": min(limit, 50), "$orderby": "receivedDateTime desc", "$select": "subject,from,receivedDateTime,bodyPreview,isRead"},
+            )
+            msgs = await collect(pages, limit)
             if not msgs:
                 return f"No emails in {folder}."
             lines = []
@@ -156,10 +161,12 @@ class OutlookConnector(Connector):
                 return err
             now = datetime.now(timezone.utc)
             end = now + timedelta(days=days)
-            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/calendarView", service="Calendar", action="events", params={"startDateTime": now.isoformat(), "endDateTime": end.isoformat(), "$top": 50, "$orderby": "start/dateTime", "$select": "subject,start,end,location,organizer,isAllDay"})
-            if err:
-                return err
-            events = r.json().get("value", [])
+            pages = paginate_odata(
+                client, f"{GRAPH}/me/calendarView",
+                service="Calendar", action="events",
+                params={"startDateTime": now.isoformat(), "endDateTime": end.isoformat(), "$top": 50, "$orderby": "start/dateTime", "$select": "subject,start,end,location,organizer,isAllDay"},
+            )
+            events = await collect(pages, 200)
             if not events:
                 return f"No events in the next {days} days."
             lines = []

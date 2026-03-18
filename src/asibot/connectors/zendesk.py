@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_odata
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +45,14 @@ class ZendeskConnector(Connector):
             q = f"type:ticket {query}"
             if status:
                 q += f" status:{status}"
-            r, err = await token_store.safe_request(
-                client, "GET", "/search.json",
+            pages = paginate_odata(
+                client, "/search.json",
                 service="Zendesk", action="search tickets",
-                params={"query": q, "per_page": limit},
+                params={"query": q, "per_page": min(limit, 100)},
+                results_key="results",
+                next_link_key="next_page",
             )
-            if err:
-                return err
-            results = r.json().get("results", [])
+            results = await collect(pages, limit)
             if not results:
                 return "No tickets found."
             lines = []
@@ -116,14 +117,14 @@ class ZendeskConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "zendesk", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(
-                client, "GET", "/help_center/articles/search.json",
+            pages = paginate_odata(
+                client, "/help_center/articles/search.json",
                 service="Zendesk", action="search articles",
-                params={"query": query, "per_page": limit},
+                params={"query": query, "per_page": min(limit, 100)},
+                results_key="results",
+                next_link_key="next_page",
             )
-            if err:
-                return err
-            results = r.json().get("results", [])
+            results = await collect(pages, limit)
             if not results:
                 return "No articles found."
             lines = []

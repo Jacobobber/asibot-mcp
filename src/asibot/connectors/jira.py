@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_offset
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +41,18 @@ class JiraConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(
-                client, "GET", "/search",
+            pages = paginate_offset(
+                client, "/search",
                 service="Jira", action="search",
-                params={"jql": jql, "maxResults": limit, "fields": "summary,status,assignee,priority,updated"},
+                params={"jql": jql, "fields": "summary,status,assignee,priority,updated"},
+                results_key="issues",
+                page_size_param="maxResults",
+                offset_param="startAt",
+                offset_start=0,
+                page_size=min(limit, 100),
+                total_key="total",
             )
-            if err:
-                return err
-            issues = r.json().get("issues", [])
+            issues = await collect(pages, limit)
             if not issues:
                 return "No issues found."
             lines = []
@@ -113,14 +118,18 @@ class JiraConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(
-                client, "GET", "/project/search",
+            pages = paginate_offset(
+                client, "/project/search",
                 service="Jira", action="list projects",
-                params={"maxResults": limit},
+                params={},
+                results_key="values",
+                page_size_param="maxResults",
+                offset_param="startAt",
+                offset_start=0,
+                page_size=min(limit, 100),
+                total_key="total",
             )
-            if err:
-                return err
-            projects = r.json().get("values", [])
+            projects = await collect(pages, limit)
             if not projects:
                 return "No projects found."
             return "\n".join(f"{p['key']}: {p.get('name', '?')} ({p.get('projectTypeKey', '?')})" for p in projects)
@@ -136,14 +145,18 @@ class JiraConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(
-                client, "GET", "/search",
+            pages = paginate_offset(
+                client, "/search",
                 service="Jira", action="my issues",
-                params={"jql": "assignee=currentUser() ORDER BY updated DESC", "maxResults": limit, "fields": "summary,status,priority,updated"},
+                params={"jql": "assignee=currentUser() ORDER BY updated DESC", "fields": "summary,status,priority,updated"},
+                results_key="issues",
+                page_size_param="maxResults",
+                offset_param="startAt",
+                offset_start=0,
+                page_size=min(limit, 100),
+                total_key="total",
             )
-            if err:
-                return err
-            issues = r.json().get("issues", [])
+            issues = await collect(pages, limit)
             if not issues:
                 return "No issues assigned to you."
             lines = []
