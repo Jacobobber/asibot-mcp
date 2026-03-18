@@ -1,8 +1,11 @@
 """Asibot configuration. All data stored under ~/.asibot/."""
 
+import logging
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -18,6 +21,10 @@ class Settings(BaseSettings):
     transport: str = "stdio"  # "stdio" or "streamable-http"
     host: str = "0.0.0.0"
     port: int = 8080
+
+    # Session / cache backend
+    session_backend: str = "memory"  # "memory" or "redis"
+    redis_url: str = ""  # e.g., "redis://localhost:6379/0"
 
     # Microsoft SSO (delegated auth via device code flow — used by all MS365 connectors)
     ms365_tenant_id: str = ""
@@ -47,6 +54,16 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.users_dir.mkdir(parents=True, exist_ok=True)
+
+    def validate_for_production(self) -> list[str]:
+        """Return a list of production readiness warnings."""
+        warns: list[str] = []
+        if self.session_backend == "memory" and self.transport == "streamable-http":
+            warns.append(
+                "session_backend=memory with HTTP transport: S2S tokens and rate limits "
+                "will not be shared across replicas. Set ASIBOT_SESSION_BACKEND=redis for production."
+            )
+        return warns
 
 
 settings = Settings()

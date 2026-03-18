@@ -10,7 +10,7 @@ import time
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import audit, auth, token_store, user_session
+from asibot import audit, auth, distributed_cache, token_store, user_session
 from asibot.connectors import microsoft
 from asibot.config import settings
 from asibot.connectors import registry
@@ -729,10 +729,19 @@ def _cleanup() -> None:
 
 def main() -> None:
     settings.ensure_dirs()
+
+    # Initialize distributed cache (S2S token cache + rate limiter)
+    asyncio.run(distributed_cache.init_cache())
+
     _setup_connectors()
     atexit.register(_cleanup)
     transport = settings.transport
     logger.info("Asibot MCP server starting (transport=%s, data_dir=%s)", transport, settings.data_dir)
+
+    # Log production readiness warnings
+    for warn in settings.validate_for_production():
+        logger.warning(warn)
+
     if transport == "streamable-http":
         logger.info("Listening on http://%s:%d/mcp", settings.host, settings.port)
         if settings.port != 443:

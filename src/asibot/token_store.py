@@ -6,7 +6,9 @@ Per-user files at ~/.asibot/users/{user_id}/:
   microsoft_token.json — Microsoft OAuth (managed by microsoft.py, encrypted)
 """
 
+import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -17,6 +19,107 @@ from asibot import user_session
 from asibot.crypto import load_encrypted, save_encrypted
 
 logger = logging.getLogger(__name__)
+
+# --- S2S Token Cache (centralized, uses distributed cache) ---
+
+_TOKEN_MARGIN = 300  # refresh 5 min before expiry
+
+# Per-key locks for in-process deduplication (prevents two coroutines from
+# fetching the same token simultaneously within one process)
+_s2s_locks_guard = asyncio.Lock()
+_s2s_token_locks: dict[str, asyncio.Lock] = {}
+
+
+async def get_s2s_token(
+    *,
+    cache_key: str,
+    token_url: str,
+    grant_data: dict,
+    auth: tuple[str, str],
+    service_name: str,
+    send_as_params: bool = False,
+) -> str:
+    """Fetch an S2S OAuth token with distributed caching and per-key locking.
+
+    Args:
+        cache_key: Unique cache key (e.g., "zoom:<account_id>")
+        token_url: OAuth token endpoint URL
+        grant_data: Form data or params for the token request
+        auth: (client_id, client_secret) tuple for HTTP Basic auth
+        service_name: Human-readable service name for error messages
+        send_as_params: If True, send grant_data as query params instead of form body
+
+    Returns:
+        The access token string.
+
+    Raises:
+        httpx.HTTPStatusError: On token endpoint HTTP errors
+        ValueError: If the response is missing access_token
+    """
+    from asibot.distributed_cache import get_cache
+
+    cache = get_cache()
+
+    # Per-key lock: prevents duplicate fetches within the same process
+    async with _s2s_locks_guard:
+        lock = _s2s_token_locks.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _s2s_token_locks[cache_key] = lock
+
+    async with lock:
+        # Check distributed cache
+        cached = await cache.get_s2s_token(cache_key)
+        if cached is not None:
+            token, expires_at = cached
+            if time.time() < expires_at - _TOKEN_MARGIN:
+                return token
+
+        # Fetch fresh token from OAuth endpoint
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            kwargs: dict = {"auth": auth}
+            if send_as_params:
+                kwargs["params"] = grant_data
+            else:
+                kwargs["data"] = grant_data
+            r = await client.post(token_url, **kwargs)
+            r.raise_for_status()
+            data = r.json()
+
+        token = data.get("access_token")
+        if not token:
+            raise ValueError(f"{service_name} OAuth response missing access_token")
+
+        expires_in = data.get("expires_in", 3600)
+        expires_at = time.time() + expires_in
+
+        # Store in distributed cache
+        await cache.put_s2s_token(cache_key, token, expires_at)
+        return token
+
+
+# --- Service Rate Limiting (uses distributed cache) ---
+
+
+async def check_service_rate_limit(
+    service: str,
+    limit: int = 100,
+    window_seconds: int = 60,
+) -> bool:
+    """Check if a service is under its rate limit.
+
+    Args:
+        service: Service name (e.g., "zoom", "paylocity")
+        limit: Max requests per window (default: 100)
+        window_seconds: Sliding window size in seconds (default: 60)
+
+    Returns:
+        True if under limit (request allowed), False if rate-limited.
+    """
+    from asibot.distributed_cache import get_cache
+
+    cache = get_cache()
+    return await cache.check_rate_limit(f"service:{service}", limit, window_seconds)
 
 # --- Schema Versioning ---
 

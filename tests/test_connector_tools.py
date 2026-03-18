@@ -506,8 +506,7 @@ class TestSalesforceGetRecord:
 class TestZoomListMeetings:
     @pytest.mark.asyncio
     async def test_list_meetings_success(self):
-        from asibot.connectors.zoom import ZoomConnector, _token_cache
-        _token_cache.clear()
+        from asibot.connectors.zoom import ZoomConnector
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
@@ -531,12 +530,11 @@ class TestZoomListMeetings:
             result = await tools["zoom_list_meetings"](ctx)
         assert "Team Sync" in result
         assert "123" in result
-        _token_cache.clear()
+
 
     @pytest.mark.asyncio
     async def test_list_meetings_empty(self):
-        from asibot.connectors.zoom import ZoomConnector, _token_cache
-        _token_cache.clear()
+        from asibot.connectors.zoom import ZoomConnector
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
@@ -553,14 +551,13 @@ class TestZoomListMeetings:
         ):
             result = await tools["zoom_list_meetings"](ctx)
         assert "No upcoming meetings" in result
-        _token_cache.clear()
+
 
 
 class TestZoomGetMeeting:
     @pytest.mark.asyncio
     async def test_get_meeting_success(self):
-        from asibot.connectors.zoom import ZoomConnector, _token_cache
-        _token_cache.clear()
+        from asibot.connectors.zoom import ZoomConnector
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
@@ -584,7 +581,7 @@ class TestZoomGetMeeting:
             result = await tools["zoom_get_meeting"](456, ctx)
         assert "Sprint Review" in result
         assert "zoom.us" in result
-        _token_cache.clear()
+
 
 
 # --- Paylocity Connector Tests ---
@@ -593,8 +590,8 @@ class TestZoomGetMeeting:
 class TestPaylocityListEmployees:
     @pytest.mark.asyncio
     async def test_list_employees_success(self):
-        from asibot.connectors.paylocity import PaylocityConnector, _token_cache
-        _token_cache.clear()
+        from asibot.connectors.paylocity import PaylocityConnector
+
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
@@ -616,12 +613,12 @@ class TestPaylocityListEmployees:
             result = await tools["paylocity_list_employees"](ctx)
         assert "Alice Smith" in result
         assert "Bob Jones" in result
-        _token_cache.clear()
+
 
     @pytest.mark.asyncio
     async def test_list_employees_empty(self):
-        from asibot.connectors.paylocity import PaylocityConnector, _token_cache
-        _token_cache.clear()
+        from asibot.connectors.paylocity import PaylocityConnector
+
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
@@ -639,14 +636,14 @@ class TestPaylocityListEmployees:
         ):
             result = await tools["paylocity_list_employees"](ctx)
         assert "No employees found" in result
-        _token_cache.clear()
+
 
 
 class TestPaylocityGetEmployee:
     @pytest.mark.asyncio
     async def test_get_employee_success(self):
-        from asibot.connectors.paylocity import PaylocityConnector, _token_cache
-        _token_cache.clear()
+        from asibot.connectors.paylocity import PaylocityConnector
+
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
@@ -671,7 +668,7 @@ class TestPaylocityGetEmployee:
         assert "Carol Davis" in result
         assert "Engineer" in result
         assert "ENG" in result
-        _token_cache.clear()
+
 
     @pytest.mark.asyncio
     async def test_get_employee_invalid_id(self):
@@ -686,54 +683,78 @@ class TestPaylocityGetEmployee:
         assert "required" in result.lower()
 
 
-# --- Token Caching Tests ---
+# --- Token Caching Tests (via distributed cache) ---
 
 
 class TestZoomTokenCaching:
     @pytest.mark.asyncio
     async def test_token_cached(self):
-        from asibot.connectors.zoom import _token_cache, _get_access_token, _TOKEN_MARGIN
-        _token_cache.clear()
-        _token_cache["acc1"] = ("cached_token", time.time() + 3600)
-        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
-        # Should return cached token without making HTTP request
-        token = await _get_access_token(creds)
-        assert token == "cached_token"
-        _token_cache.clear()
+        from asibot.connectors.zoom import _get_access_token
+        from asibot.distributed_cache import InMemoryCache
+        import asibot.distributed_cache as dc
+
+        original = dc._cache
+        dc._cache = InMemoryCache()
+        try:
+            # Pre-populate cache with valid token
+            await dc._cache.put_s2s_token("zoom:acc1", "cached_token", time.time() + 3600)
+            creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+            # Should return cached token without making HTTP request
+            token = await _get_access_token(creds)
+            assert token == "cached_token"
+        finally:
+            dc._cache = original
 
     @pytest.mark.asyncio
     async def test_expired_token_refetched(self):
-        from asibot.connectors.zoom import _token_cache, _get_access_token, _TOKEN_MARGIN
-        _token_cache.clear()
-        _token_cache["acc1"] = ("old_token", time.time() - 100)  # expired
-        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        from asibot.connectors.zoom import _get_access_token
+        from asibot.distributed_cache import InMemoryCache
+        import asibot.distributed_cache as dc
 
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"access_token": "new_token", "expires_in": 3600}
-        mock_resp.raise_for_status.return_value = None
+        original = dc._cache
+        dc._cache = InMemoryCache()
+        try:
+            # Pre-populate with expired token
+            await dc._cache.put_s2s_token("zoom:acc1", "old_token", time.time() - 100)
+            creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
 
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_resp
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"access_token": "new_token", "expires_in": 3600}
+            mock_resp.raise_for_status.return_value = None
 
-        with patch("asibot.connectors.zoom.httpx.AsyncClient", return_value=mock_client):
-            token = await _get_access_token(creds)
-        assert token == "new_token"
-        assert _token_cache["acc1"][0] == "new_token"
-        _token_cache.clear()
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_resp
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                token = await _get_access_token(creds)
+            assert token == "new_token"
+            # Verify it's cached now
+            cached = await dc._cache.get_s2s_token("zoom:acc1")
+            assert cached is not None
+            assert cached[0] == "new_token"
+        finally:
+            dc._cache = original
 
 
 class TestPaylocityTokenCaching:
     @pytest.mark.asyncio
     async def test_token_cached(self):
-        from asibot.connectors.paylocity import _token_cache, _get_access_token
-        _token_cache.clear()
-        _token_cache["cid"] = ("cached_pay_token", time.time() + 3600)
-        creds = {"client_id": "cid", "client_secret": "csec"}
-        token = await _get_access_token(creds)
-        assert token == "cached_pay_token"
-        _token_cache.clear()
+        from asibot.connectors.paylocity import _get_access_token
+        from asibot.distributed_cache import InMemoryCache
+        import asibot.distributed_cache as dc
+
+        original = dc._cache
+        dc._cache = InMemoryCache()
+        try:
+            await dc._cache.put_s2s_token("paylocity:cid", "cached_pay_token", time.time() + 3600)
+            creds = {"client_id": "cid", "client_secret": "csec"}
+            token = await _get_access_token(creds)
+            assert token == "cached_pay_token"
+        finally:
+            dc._cache = original
+
 
 
 # --- safe_request Tests ---
