@@ -14,3 +14,7 @@ data/
 .ruff_cache/
 .mypy_cache/
 master.key
+
+# Load test artifacts
+tests/load/test_users.csv
+tests/load/results/*/

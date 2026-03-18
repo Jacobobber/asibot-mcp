@@ -1,0 +1,152 @@
+# Load test stack: PostgreSQL + PgBouncer + Asibot server + Locust (master + 2 workers)
+#
+# Usage:
+#   docker compose -f tests/load/docker-compose.loadtest.yml up -d
+#   docker compose -f tests/load/docker-compose.loadtest.yml down -v
+
+services:
+  # ---------- Data tier ----------
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: asibot
+      POSTGRES_USER: asibot
+      POSTGRES_PASSWORD: loadtest
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asibot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Tune for load testing: more connections, more shared_buffers
+    command: >
+      postgres
+      -c max_connections=300
+      -c shared_buffers=256MB
+      -c work_mem=8MB
+      -c log_min_duration_statement=500
+    tmpfs:
+      - /var/lib/postgresql/data  # ephemeral storage for speed
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    volumes:
+      - ../../deploy/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ../../deploy/pgbouncer-userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    environment:
+      DATABASE_URL: postgresql://asibot:loadtest@postgres:5432/asibot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U asibot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------- Application ----------
+
+  asibot:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    expose:
+      - "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - asibot-loadtest-data:/data
+    environment:
+      - ASIBOT_TRANSPORT=streamable-http
+      - ASIBOT_ALLOW_INSECURE_HTTP=true
+      - ASIBOT_HOST=0.0.0.0
+      - ASIBOT_PORT=8080
+      - ASIBOT_DATA_DIR=/data
+      # PgBouncer for connection pooling (matches production config)
+      - ASIBOT_DATABASE_URL=postgresql://asibot:loadtest@pgbouncer:6432/asibot
+      # Mock SSO config so setup tool doesn't fail on missing config
+      - ASIBOT_MS365_TENANT_ID=loadtest-tenant
+      - ASIBOT_MS365_CLIENT_ID=loadtest-client
+      - ASIBOT_GITHUB_CLIENT_ID=loadtest-github-client
+      # Business defaults for connector mock creds
+      - ASIBOT_GITHUB_ORG=loadtest-org
+      - ASIBOT_ATLASSIAN_DOMAIN=loadtest.atlassian.net
+      - ASIBOT_ZENDESK_SUBDOMAIN=loadtest
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/mcp')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+
+  # ---------- Seed script (run-once) ----------
+
+  seed:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    volumes:
+      - asibot-loadtest-data:/data
+      - ./:/loadtest
+    environment:
+      - ASIBOT_DATA_DIR=/data
+    entrypoint: ["python", "/loadtest/seed_test_users.py", "--users", "200", "--output", "/loadtest/test_users.csv"]
+    depends_on:
+      asibot:
+        condition: service_healthy
+
+  # ---------- Load testing (Locust) ----------
+
+  locust-master:
+    image: locustio/locust:2.32.4
+    ports:
+      - "8089:8089"  # Locust web UI
+    volumes:
+      - ./:/mnt/locust
+    environment:
+      - LOCUST_USERS_CSV=/mnt/locust/test_users.csv
+    command: >
+      -f /mnt/locust/locustfile.py
+      --master
+      --expect-workers 2
+      --host http://asibot:8080
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  locust-worker-1:
+    image: locustio/locust:2.32.4
+    volumes:
+      - ./:/mnt/locust
+    environment:
+      - LOCUST_USERS_CSV=/mnt/locust/test_users.csv
+    command: >
+      -f /mnt/locust/locustfile.py
+      --worker
+      --master-host locust-master
+    depends_on:
+      - locust-master
+
+  locust-worker-2:
+    image: locustio/locust:2.32.4
+    volumes:
+      - ./:/mnt/locust
+    environment:
+      - LOCUST_USERS_CSV=/mnt/locust/test_users.csv
+    command: >
+      -f /mnt/locust/locustfile.py
+      --worker
+      --master-host locust-master
+    depends_on:
+      - locust-master
+
+volumes:
+  asibot-loadtest-data:
