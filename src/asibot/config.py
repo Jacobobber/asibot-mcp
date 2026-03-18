@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     session_ttl: int = 3600  # seconds (sliding window — inactivity timeout)
     absolute_session_ttl: int = 28800  # seconds (hard cap — max session lifetime regardless of activity)
 
+    # Session / cache backend
+    session_backend: str = "memory"  # "memory" or "redis"
+    redis_url: str = ""  # e.g., "redis://localhost:6379/0"
+
     # Microsoft SSO (delegated auth via device code flow — used by all MS365 connectors)
     ms365_tenant_id: str = ""
     ms365_client_id: str = ""
@@ -279,6 +283,16 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.users_dir.mkdir(parents=True, exist_ok=True)
+
+    def validate_for_production(self) -> list[str]:
+        """Return a list of production readiness warnings."""
+        warns: list[str] = []
+        if self.session_backend == "memory" and self.transport == "streamable-http":
+            warns.append(
+                "session_backend=memory with HTTP transport: S2S tokens and rate limits "
+                "will not be shared across replicas. Set ASIBOT_SESSION_BACKEND=redis for production."
+            )
+        return warns
 
 
 def validate_for_production(s: Settings) -> list[str]:

@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import audit, auth, db, http_pool, metrics, migrate, token_store, user_session, validation
+from asibot import audit, auth, db, distributed_cache, http_pool, metrics, migrate, token_store, user_session, validation
 from asibot.connectors import microsoft
 from asibot.config import settings, validate_for_production
 from asibot.connectors import registry
@@ -1346,6 +1346,9 @@ def main() -> None:
     for warning in validate_for_production(settings):
         logger.warning("CONFIG: %s", warning)
 
+    # Initialize distributed cache (S2S token cache + rate limiter)
+    asyncio.run(distributed_cache.init_cache())
+
     _setup_connectors()
     metrics.start_metrics_server(
         port=settings.metrics_port,
@@ -1364,6 +1367,11 @@ def main() -> None:
 
     transport = settings.transport
     logger.info("Asibot MCP server starting (transport=%s, data_dir=%s)", transport, settings.data_dir)
+
+    # Log production readiness warnings
+    for warn in settings.validate_for_production():
+        logger.warning(warn)
+
     if transport == "streamable-http":
         if settings.port != 443 and not settings.allow_insecure_http:
             logger.error(

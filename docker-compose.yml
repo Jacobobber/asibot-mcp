@@ -31,6 +31,18 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   nginx:
     image: nginx:1.27-alpine
     ports:
@@ -68,8 +80,12 @@ services:
       - ASIBOT_ALLOW_INSECURE_HTTP=true
       # Route through PgBouncer (port 6432) instead of connecting directly to Postgres
       - ASIBOT_DATABASE_URL=postgresql://asibot:${POSTGRES_PASSWORD}@pgbouncer:6432/asibot
+      - ASIBOT_SESSION_BACKEND=redis
+      - ASIBOT_REDIS_URL=redis://redis:6379/0
     depends_on:
       pgbouncer:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     deploy:
