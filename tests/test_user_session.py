@@ -8,6 +8,7 @@ import pytest
 
 from asibot import user_session
 from asibot.config import settings
+from asibot.session_store import InMemorySessionStore
 
 
 def _mock_ctx(api_key=None, session_id=None):
@@ -22,6 +23,13 @@ def _mock_ctx(api_key=None, session_id=None):
     headers.get = MagicMock(side_effect=lambda k, d="": header_data.get(k, d))
     ctx.request_context.request.headers = headers
     return ctx
+
+
+def _fresh_store() -> InMemorySessionStore:
+    """Create and install a fresh InMemorySessionStore for test isolation."""
+    store = InMemorySessionStore()
+    user_session.set_store(store)
+    return store
 
 
 class TestSanitizeUserId:
@@ -73,66 +81,66 @@ class TestGetUserDataDir:
 
 class TestSessionCache:
     def setup_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        self.store = _fresh_store()
 
     def teardown_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        user_session.set_store(InMemorySessionStore())
 
     def test_session_cached_with_timestamp(self):
-        user_session._session_to_user["sess1"] = ("user@example.com", time.time())
-        uid, ts = user_session._session_to_user["sess1"]
+        self.store.put_session("sess1", "user@example.com", ttl=3600)
+        result = self.store.get_session("sess1")
+        assert result is not None
+        uid, ts = result
         assert uid == "user@example.com"
 
     def test_evict_stale_sessions(self):
         now = time.time()
-        user_session._session_to_user["fresh"] = ("a@b.com", now)
-        user_session._session_to_user["stale"] = ("c@d.com", now - 7200)  # 2 hours old
-        user_session._evict_stale_sessions()
-        assert "fresh" in user_session._session_to_user
-        assert "stale" not in user_session._session_to_user
+        self.store.put_session("fresh", "a@b.com", ttl=3600, timestamp=now)
+        self.store.put_session("stale", "c@d.com", ttl=3600, timestamp=now - 7200)
+        self.store.evict_expired()
+        assert self.store.get_session("fresh") is not None
+        assert self.store.get_session("stale") is None
 
     def test_cache_session_enforces_hard_cap(self):
         """_cache_session should evict LRU entry when at max capacity."""
+        store = InMemorySessionStore(max_sessions=3)
+        user_session.set_store(store)
         now = time.time()
-        with patch.object(user_session, "_MAX_SESSIONS", 3):
-            user_session._session_to_user["s1"] = ("a@b.com", now - 100)
-            user_session._session_to_user["s2"] = ("b@c.com", now - 50)
-            user_session._session_to_user["s3"] = ("c@d.com", now - 10)
-            # At capacity -- adding s4 should evict s1 (LRU / oldest)
-            user_session._cache_session("s4", "d@e.com")
-            assert "s1" not in user_session._session_to_user
-            assert "s4" in user_session._session_to_user
-            assert len(user_session._session_to_user) == 3
+        store.put_session("s1", "a@b.com", ttl=3600, timestamp=now - 100)
+        store.put_session("s2", "b@c.com", ttl=3600, timestamp=now - 50)
+        store.put_session("s3", "c@d.com", ttl=3600, timestamp=now - 10)
+        # At capacity -- adding s4 should evict s1 (LRU / oldest)
+        user_session._cache_session("s4", "d@e.com")
+        assert store.get_session("s1") is None
+        assert store.get_session("s4") is not None
+        assert len(store._sessions) == 3
 
     def test_lru_eviction_order(self):
         """Accessing a session should move it to end, protecting it from eviction."""
+        store = InMemorySessionStore(max_sessions=3)
+        user_session.set_store(store)
         now = time.time()
-        with patch.object(user_session, "_MAX_SESSIONS", 3):
-            user_session._session_to_user["s1"] = ("a@b.com", now - 100)
-            user_session._session_to_user["s2"] = ("b@c.com", now - 50)
-            user_session._session_to_user["s3"] = ("c@d.com", now - 10)
-            # Access s1 -- moves it to end (most recently used)
-            user_session._session_to_user["s1"] = ("a@b.com", now)
-            user_session._session_to_user.move_to_end("s1")
-            # Now s2 is the LRU -- adding s4 should evict s2, not s1
-            user_session._cache_session("s4", "d@e.com")
-            assert "s1" in user_session._session_to_user  # protected by access
-            assert "s2" not in user_session._session_to_user  # evicted as LRU
-            assert "s4" in user_session._session_to_user
+        store.put_session("s1", "a@b.com", ttl=3600, timestamp=now - 100)
+        store.put_session("s2", "b@c.com", ttl=3600, timestamp=now - 50)
+        store.put_session("s3", "c@d.com", ttl=3600, timestamp=now - 10)
+        # Access s1 -- moves it to end (most recently used)
+        store.get_session("s1")
+        # Now s2 is the LRU -- adding s4 should evict s2, not s1
+        user_session._cache_session("s4", "d@e.com")
+        assert store.get_session("s1") is not None  # protected by access
+        assert store.get_session("s2") is None  # evicted as LRU
+        assert store.get_session("s4") is not None
 
     def test_invalidate_user_sessions(self):
         """invalidate_user_sessions should remove all sessions for a given user."""
-        now = time.time()
-        user_session._session_to_user["s1"] = ("alice@example.com", now)
-        user_session._session_to_user["s2"] = ("bob@example.com", now)
-        user_session._session_to_user["s3"] = ("alice@example.com", now)
+        self.store.put_session("s1", "alice@example.com", ttl=3600)
+        self.store.put_session("s2", "bob@example.com", ttl=3600)
+        self.store.put_session("s3", "alice@example.com", ttl=3600)
         count = user_session.invalidate_user_sessions("alice@example.com")
         assert count == 2
-        assert "s1" not in user_session._session_to_user
-        assert "s3" not in user_session._session_to_user
-        assert "s2" in user_session._session_to_user  # bob unaffected
+        assert self.store.get_session("s1") is None
+        assert self.store.get_session("s3") is None
+        assert self.store.get_session("s2") is not None  # bob unaffected
 
     def test_invalidate_no_sessions(self):
         """invalidate_user_sessions on non-existent user returns 0."""
@@ -141,7 +149,7 @@ class TestSessionCache:
 
     def test_expired_session_not_returned(self):
         # Pre-populate with an expired session
-        user_session._session_to_user["expired-sess"] = ("old@example.com", time.time() - 7200)
+        self.store.put_session("expired-sess", "old@example.com", ttl=3600, timestamp=time.time() - 7200)
 
         ctx = MagicMock()
         headers = MagicMock()
@@ -159,22 +167,24 @@ class TestSessionCache:
 
 class TestRateLimiting:
     def setup_method(self):
-        user_session._auth_failures.clear()
+        self.store = _fresh_store()
 
     def teardown_method(self):
-        user_session._auth_failures.clear()
+        user_session.set_store(InMemorySessionStore())
 
     def test_not_rate_limited_initially(self):
         assert not user_session._is_rate_limited("test_pfx")
 
     def test_rate_limited_after_max_failures(self):
-        now = time.time()
-        user_session._auth_failures["test_pfx"] = [now] * user_session._AUTH_FAIL_MAX
+        for _ in range(user_session._AUTH_FAIL_MAX):
+            self.store.record_auth_failure("test_pfx")
         assert user_session._is_rate_limited("test_pfx")
 
     def test_old_failures_pruned(self):
-        old = time.time() - user_session._AUTH_FAIL_WINDOW - 1
-        user_session._auth_failures["test_pfx"] = [old] * user_session._AUTH_FAIL_MAX
+        # Manually inject old timestamps
+        self.store._auth_failures["test_pfx"] = [
+            time.time() - user_session._AUTH_FAIL_WINDOW - 1
+        ] * user_session._AUTH_FAIL_MAX
         # Old failures should not count
         assert not user_session._is_rate_limited("test_pfx")
 
@@ -189,13 +199,13 @@ class TestRateLimiting:
             assert uid is None
             assert "Invalid API key" in err
             key_pfx = user_session._key_prefix("bad_key_123")
-            assert len(user_session._auth_failures.get(key_pfx, [])) == 1
+            assert len(self.store._auth_failures.get(key_pfx, [])) == 1
 
     def test_rate_limited_response(self):
         # Fill up the failure list for a specific key prefix
-        now = time.time()
         key_pfx = user_session._key_prefix("any_key_456")
-        user_session._auth_failures[key_pfx] = [now] * user_session._AUTH_FAIL_MAX
+        for _ in range(user_session._AUTH_FAIL_MAX):
+            self.store.record_auth_failure(key_pfx)
 
         ctx = _mock_ctx(api_key="any_key_456")
         uid, err = user_session.require_user(ctx)
@@ -204,10 +214,10 @@ class TestRateLimiting:
 
     def test_different_keys_independent(self):
         """Rate limiting for one key should not affect another."""
-        now = time.time()
         pfx_a = user_session._key_prefix("key_aaaa")
         pfx_b = user_session._key_prefix("key_bbbb")
-        user_session._auth_failures[pfx_a] = [now] * user_session._AUTH_FAIL_MAX
+        for _ in range(user_session._AUTH_FAIL_MAX):
+            self.store.record_auth_failure(pfx_a)
 
         assert user_session._is_rate_limited(pfx_a)
         assert not user_session._is_rate_limited(pfx_b)
@@ -215,12 +225,10 @@ class TestRateLimiting:
 
 class TestSingleUserAutoLogin:
     def setup_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        _fresh_store()
 
     def teardown_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        user_session.set_store(InMemorySessionStore())
 
     def test_auto_login_allowed_on_stdio(self):
         """Single-user auto-login should work on stdio transport."""
@@ -251,12 +259,10 @@ class TestSingleUserAutoLogin:
 
 class TestRequireUser:
     def setup_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        _fresh_store()
 
     def teardown_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        user_session.set_store(InMemorySessionStore())
 
     def test_valid_api_key_caches_session(self):
         ctx = MagicMock()
@@ -273,9 +279,11 @@ class TestRequireUser:
             uid, err = user_session.require_user(ctx)
             assert uid == "test@example.com"
             assert err is None
-            # Verify it was cached
-            assert "sess-abc" in user_session._session_to_user
-            cached_uid, _ = user_session._session_to_user["sess-abc"]
+            # Verify it was cached in the store
+            store = user_session._get_store()
+            result = store.get_session("sess-abc")
+            assert result is not None
+            cached_uid, _ = result
             assert cached_uid == "test@example.com"
 
 

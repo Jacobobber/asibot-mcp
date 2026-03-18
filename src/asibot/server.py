@@ -338,7 +338,7 @@ async def asibot_setup(ctx: Context) -> str:
         _cleanup_pending_setups()
         if len(_pending_setups) >= _MAX_PENDING_SETUPS:
             return "Too many pending setups. Please try again later."
-        _pending_setups[setup_id] = {"status": "pending", "_created_at": time.time()}
+        await _persist_setup(setup_id, {"status": "pending", "_created_at": time.time()})
 
     # Enforce concurrent polling task limit
     global _active_polling_tasks
@@ -364,7 +364,10 @@ async def asibot_setup(ctx: Context) -> str:
     )
 
 
-# Temporary storage for pending setups, keyed by setup_id
+# Temporary storage for pending setups, keyed by setup_id.
+# This in-memory dict acts as a fast cache; when a PostgreSQL backend is
+# configured the state is also persisted so server restarts don't lose
+# in-flight OAuth flows.
 _pending_setups: dict[str, dict] = {}
 _pending_setups_lock = asyncio.Lock()
 _SETUP_TTL = 900  # 15 minutes — matches device code expiry
@@ -400,6 +403,75 @@ _ALLOWED_TOKEN_HOSTS = frozenset({
     "https://oauth2.googleapis.com",
 })
 
+# Optional DB backend — initialised lazily via _get_db().
+_db_backend = None
+
+
+def _get_db():
+    """Return the PostgresBackend instance, or None if not configured."""
+    global _db_backend
+    return _db_backend
+
+
+async def init_db_backend() -> None:
+    """Initialise the PostgresBackend if ASIBOT_DATABASE_URL is set.
+
+    Called once at server startup (see ``main()``).
+    """
+    global _db_backend
+    if not settings.database_url:
+        return
+    try:
+        from asibot.db_postgres import PostgresBackend
+        _db_backend = PostgresBackend(settings.database_url)
+        await _db_backend.initialize()
+        logger.info("PostgresBackend initialised for OAuth state persistence")
+    except Exception as exc:
+        logger.error("Failed to initialise PostgresBackend: %s — OAuth state will be volatile", exc)
+        _db_backend = None
+
+
+async def _persist_setup(setup_id: str, state: dict, *, user_id: str | None = None, service: str | None = None) -> None:
+    """Write a pending setup entry to both the in-memory cache and (optionally) the DB."""
+    _pending_setups[setup_id] = state
+    db = _get_db()
+    if db is not None:
+        try:
+            await db.store_pending_setup(
+                setup_id, state, user_id=user_id, service=service, ttl=_SETUP_TTL,
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist setup %s to DB: %s", setup_id, exc)
+
+
+async def _load_setup_from_db(setup_id: str) -> dict | None:
+    """Fall back to DB if an entry is missing from the in-memory cache."""
+    db = _get_db()
+    if db is None:
+        return None
+    try:
+        row = await db.get_pending_setup(setup_id)
+        if row is None:
+            return None
+        state = row["state"]
+        # Re-populate the in-memory cache
+        _pending_setups[setup_id] = state
+        return state
+    except Exception as exc:
+        logger.warning("Failed to load setup %s from DB: %s", setup_id, exc)
+        return None
+
+
+async def _delete_setup(setup_id: str) -> None:
+    """Remove a pending setup from both cache and DB."""
+    _pending_setups.pop(setup_id, None)
+    db = _get_db()
+    if db is not None:
+        try:
+            await db.delete_pending_setup(setup_id)
+        except Exception as exc:
+            logger.warning("Failed to delete setup %s from DB: %s", setup_id, exc)
+
 
 def _on_task_done(task: asyncio.Task, setup_id: str) -> None:
     """Log unhandled exceptions from background setup tasks and mark them failed."""
@@ -410,12 +482,21 @@ def _on_task_done(task: asyncio.Task, setup_id: str) -> None:
     exc = task.exception()
     if exc:
         logger.error("Background setup task %s failed: %s", setup_id, exc)
-        # Done callbacks are synchronous — schedule a locked write
-        task.get_loop().create_task(_set_pending_setup(setup_id, {
+        # Done callbacks are synchronous — schedule a locked write + DB persist
+        state = {
             "status": "failed",
             "error": f"Internal error: {exc}",
             "_created_at": time.time(),
-        }))
+        }
+        task.get_loop().create_task(_set_pending_setup(setup_id, state))
+        # Best-effort DB persist (fire-and-forget via the event loop)
+        db = _get_db()
+        if db is not None:
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(db.store_pending_setup(setup_id, state, ttl=_SETUP_TTL))
+            except RuntimeError:
+                pass
 
 
 def _cleanup_pending_setups() -> None:
@@ -727,7 +808,10 @@ async def _start_device_code_flow(service: str, user_id: str) -> str:
         _cleanup_pending_setups()
         if len(_pending_setups) >= _MAX_PENDING_SETUPS:
             return "Too many pending setups. Please try again later."
-        _pending_setups[setup_id] = {"status": "pending", "_created_at": time.time()}
+        await _persist_setup(
+            setup_id, {"status": "pending", "_created_at": time.time()},
+            user_id=user_id, service=service,
+        )
 
     # Enforce concurrent polling task limit
     global _active_polling_tasks
@@ -802,6 +886,9 @@ async def asibot_setup_status(setup_id: str = "") -> str:
         _cleanup_pending_setups()
         if setup_id:
             result = _pending_setups.get(setup_id)
+            # Fall back to DB if not in memory (e.g., after server restart)
+            if result is None:
+                result = await _load_setup_from_db(setup_id)
         elif _pending_setups:
             # Fallback: use the most recent setup for single-user convenience
             setup_id = next(reversed(_pending_setups))
@@ -815,7 +902,7 @@ async def asibot_setup_status(setup_id: str = "") -> str:
         if result["status"] == "complete":
             user = result["user"]
             svc = result.get("_service")
-            _pending_setups.pop(setup_id, None)
+            await _delete_setup(setup_id)
 
             # Service OAuth completions (GitHub, Google) — no API key to show
             if svc:
@@ -835,11 +922,11 @@ async def asibot_setup_status(setup_id: str = "") -> str:
 
         if result["status"] == "failed":
             error = result.get("error", "Unknown error")
-            _pending_setups.pop(setup_id, None)
+            await _delete_setup(setup_id)
             return f"Setup failed: {error}\n\nTry asibot_setup again."
 
         if result["status"] == "expired":
-            _pending_setups.pop(setup_id, None)
+            await _delete_setup(setup_id)
             return "Setup timed out. Try asibot_setup again."
 
         return "Still waiting for you to sign in via browser..."
@@ -1169,6 +1256,22 @@ def _setup_connectors() -> None:
 # --- Entry Point ---
 
 
+async def _prune_expired_setups_background() -> None:
+    """Periodically prune expired setups from the DB (runs every 5 minutes)."""
+    while True:
+        await asyncio.sleep(300)
+        db_backend = _get_db()
+        if db_backend is not None:
+            try:
+                count = await db_backend.prune_expired_setups()
+                if count:
+                    logger.info("Pruned %d expired pending setup(s) from DB", count)
+            except Exception as exc:
+                logger.warning("Failed to prune expired setups: %s", exc)
+        # Also clean the in-memory cache
+        _cleanup_pending_setups()
+
+
 async def _async_shutdown() -> None:
     """Gracefully shut down all resources."""
     logger.info("Shutting down: cancelling %d background tasks", len(_background_tasks))
@@ -1196,6 +1299,13 @@ def _cleanup() -> None:
             loop.run_until_complete(_async_shutdown())
     except RuntimeError:
         pass
+
+
+async def _async_init() -> None:
+    """Async initialisation tasks run once at startup."""
+    await init_db_backend()
+    # Start background cleanup task
+    asyncio.create_task(_prune_expired_setups_background())
 
 
 def _start_dashboard() -> None:
@@ -1233,6 +1343,15 @@ def main() -> None:
         bearer_token=settings.metrics_bearer_token,
     )
     atexit.register(_cleanup)
+
+    # Run async init (DB backend, background tasks)
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    loop.run_until_complete(_async_init())
+
     transport = settings.transport
     logger.info("Asibot MCP server starting (transport=%s, data_dir=%s)", transport, settings.data_dir)
     if transport == "streamable-http":

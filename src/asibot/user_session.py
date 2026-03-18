@@ -5,10 +5,11 @@ Auth flow:
 2. User adds API key to Claude Desktop config as Authorization header
 3. Every request carries the API key -> server resolves user identity automatically
 
-Sessions are cached in memory (OrderedDict/LRU) **and** persisted to SQLite so
-they survive server restarts.  The in-memory cache is the hot path; DB writes
-happen asynchronously via background tasks.  On startup, active sessions are
-loaded from the DB into the memory cache.
+
+Sessions use a pluggable backend (in-memory or Redis) via the SessionStore
+abstraction.  They are also persisted to SQLite so they survive server restarts.
+DB writes happen asynchronously via background tasks.  On startup, active
+sessions are loaded from the DB into the session store.
 """
 
 import asyncio
@@ -23,21 +24,38 @@ from mcp.server.fastmcp import Context
 
 from asibot import auth
 from asibot.config import settings
+from asibot.session_store import SessionStore, create_session_store
 
 logger = logging.getLogger(__name__)
 
 _MAX_SESSIONS = 10_000
 
-# OrderedDict for LRU eviction -- most recently used entries move to the end
-_session_to_user: OrderedDict[str, tuple[str, float]] = OrderedDict()
+
 
 # Rate limiting for failed auth attempts -- per API key prefix
 _AUTH_FAIL_WINDOW = 300  # 5 minutes
 _AUTH_FAIL_MAX = 10  # max failures per window before lockout
-_auth_failures: dict[str, list[float]] = {}  # key_prefix -> timestamps
 
 # Only allow email-like user IDs: alphanumeric, dots, hyphens, underscores, @
 _SAFE_USER_ID = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+
+# Lazily initialised session store (created on first use to avoid import-time
+# side effects when Redis is configured).
+_store: SessionStore | None = None
+
+
+def _get_store() -> SessionStore:
+    """Return the module-level session store, creating it on first access."""
+    global _store
+    if _store is None:
+        _store = create_session_store()
+    return _store
+
+
+def set_store(store: SessionStore) -> None:
+    """Replace the module-level session store (used by tests and startup hooks)."""
+    global _store
+    _store = store
 
 
 def _sanitize_user_id(user_id: str) -> str:
@@ -75,13 +93,6 @@ def _get_api_key(ctx: Context) -> str | None:
     return None
 
 
-def _evict_stale_sessions() -> None:
-    """Remove expired sessions from the cache."""
-    now = time.time()
-    ttl = settings.session_ttl
-    expired = [k for k, (_, ts) in _session_to_user.items() if now - ts > ttl]
-    for k in expired:
-        del _session_to_user[k]
 
 
 def _key_prefix(api_key: str) -> str:
@@ -91,23 +102,12 @@ def _key_prefix(api_key: str) -> str:
 
 def _record_auth_failure(key_pfx: str) -> None:
     """Record a failed auth attempt for rate limiting."""
-    _auth_failures.setdefault(key_pfx, []).append(time.time())
+    _get_store().record_auth_failure(key_pfx)
 
 
 def _is_rate_limited(key_pfx: str) -> bool:
     """Check if auth attempts for this key prefix are rate-limited."""
-    now = time.time()
-    cutoff = now - _AUTH_FAIL_WINDOW
-    entries = _auth_failures.get(key_pfx)
-    if not entries:
-        return False
-    # Prune old entries
-    while entries and entries[0] < cutoff:
-        entries.pop(0)
-    if not entries:
-        del _auth_failures[key_pfx]
-        return False
-    return len(entries) >= _AUTH_FAIL_MAX
+    return _get_store().is_rate_limited(key_pfx, _AUTH_FAIL_WINDOW, _AUTH_FAIL_MAX)
 
 
 # ---------------------------------------------------------------------------
@@ -181,18 +181,11 @@ async def _async_db_delete_user(user_id: str) -> None:
 
 
 def _cache_session(session_id: str, user_id: str) -> None:
-    """Add a session to the in-memory cache and persist to DB.
+    """Add a session to the cache, delegating to the configured store.
 
-    Enforces the hard cap with LRU eviction.
+    Also persists to the SQLite DB asynchronously.
     """
-    # Remove existing entry so it moves to end (most recent)
-    _session_to_user.pop(session_id, None)
-    if len(_session_to_user) >= _MAX_SESSIONS:
-        _evict_stale_sessions()
-    # LRU eviction: pop from front (oldest access) until under cap
-    while len(_session_to_user) >= _MAX_SESSIONS:
-        _session_to_user.popitem(last=False)
-    _session_to_user[session_id] = (user_id, time.time())
+    _get_store().put_session(session_id, user_id, settings.session_ttl)
 
     # Persist to DB (fire-and-forget)
     _schedule_db_write(session_id, user_id)
@@ -204,16 +197,14 @@ def invalidate_user_sessions(user_id: str) -> int:
     Clears both in-memory cache and database.
     Returns the number of in-memory sessions invalidated.
     """
-    stale = [sid for sid, (uid, _) in _session_to_user.items() if uid == user_id]
-    for sid in stale:
-        del _session_to_user[sid]
-    if stale:
-        logger.info("Invalidated %d session(s) for user '%s'", len(stale), user_id)
+    count = _get_store().delete_user_sessions(user_id)
+    if count:
+        logger.info("Invalidated %d session(s) for user '%s'", count, user_id)
 
     # Also clear from DB (fire-and-forget)
     _schedule_db_delete_user(user_id)
 
-    return len(stale)
+    return count
 
 
 def get_user_data_dir(user_id: str) -> Path:
@@ -230,26 +221,21 @@ def require_user(ctx: Context) -> tuple[str | None, str | None]:
     Returns (user_id, error_message).
     """
     session_id = get_session_id(ctx)
-    ttl = settings.session_ttl
+    store = _get_store()
 
-    # Check in-memory session cache first (LRU: move to end on access)
-    if session_id and session_id in _session_to_user:
-        user_id, ts = _session_to_user[session_id]
-        if time.time() - ts < ttl:
-            # Refresh timestamp and move to end (most recently used)
-            _session_to_user[session_id] = (user_id, time.time())
-            _session_to_user.move_to_end(session_id)
+    # Check session store first (supports in-memory LRU or Redis)
+    if session_id:
+        result = store.get_session(session_id)
+        if result is not None:
+            user_id, _ts = result
             return user_id, None
-        else:
-            del _session_to_user[session_id]
 
-    # Fallback: check database for sessions not in memory (e.g., after LRU eviction)
-    if session_id and session_id not in _session_to_user:
+    # Fallback: check database for sessions not in the store (e.g., after eviction/restart)
+    if session_id:
         db_user = _db_lookup_session(session_id)
         if db_user:
-            # Re-populate in-memory cache
-            _session_to_user[session_id] = (db_user, time.time())
-            _session_to_user.move_to_end(session_id)
+            # Re-populate the session store
+            store.put_session(session_id, db_user, settings.session_ttl)
             logger.debug("Session %s restored from DB for user '%s'", session_id[:8], db_user)
             return db_user, None
 
@@ -304,11 +290,12 @@ async def load_sessions_from_db() -> int:
         logger.warning("Failed to load sessions from DB", exc_info=True)
         return 0
 
+    store = _get_store()
     count = 0
     for session_id, (user_id, created_at) in sessions.items():
-        if len(_session_to_user) >= _MAX_SESSIONS:
+        if count >= _MAX_SESSIONS:
             break
-        _session_to_user[session_id] = (user_id, created_at)
+        store.put_session(session_id, user_id, settings.session_ttl)
         count += 1
 
     if count:

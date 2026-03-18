@@ -27,7 +27,6 @@ class Settings(BaseSettings):
 
     # Database / sessions
     db_pool_size: int = 10
-    session_ttl: int = 3600  # seconds
 
     # Microsoft SSO (delegated auth via device code flow — used by all MS365 connectors)
     ms365_tenant_id: str = ""
@@ -46,6 +45,13 @@ class Settings(BaseSettings):
     max_concurrent_per_user: int = 10  # Per-user concurrent tool call limit
     max_concurrent_per_service: int = 50  # Per-external-service concurrent call limit
     max_concurrent_setups: int = 100  # Max concurrent device-code polling tasks
+
+    # Session / Redis
+    session_backend: str = "memory"  # "memory" or "redis"
+    redis_url: str = ""  # e.g., "redis://localhost:6379/0"
+
+    # PostgreSQL (optional — enables persistent OAuth state, sessions, etc.)
+    database_url: str = ""  # e.g., "postgresql://user:pass@host:5432/asibot"
 
     # Business defaults — admin sets once, users never need to provide these
     github_org: str = ""  # e.g., "mycompany"
