@@ -22,7 +22,23 @@ class Settings(BaseSettings):
     # Microsoft SSO (delegated auth via device code flow — used by all MS365 connectors)
     sharepoint_tenant_id: str = ""
     sharepoint_client_id: str = ""
-    sharepoint_site_url: str = ""  # e.g., "autonomoussolutions.sharepoint.com"
+    sharepoint_site_url: str = ""  # e.g., "company.sharepoint.com"
+
+    # GitHub OAuth (device code flow — zero user input)
+    github_client_id: str = ""  # GitHub OAuth App client ID
+
+    # Google OAuth (device code flow — zero user input)
+    google_client_id: str = ""
+    google_client_secret: str = ""
+
+    # Business defaults — admin sets once, users never need to provide these
+    github_org: str = ""  # e.g., "mycompany"
+    atlassian_domain: str = ""  # e.g., "mycompany.atlassian.net"
+    zendesk_subdomain: str = ""  # e.g., "mycompany"
+    salesforce_instance_url: str = ""  # e.g., "https://mycompany.my.salesforce.com"
+    sharefile_subdomain: str = ""  # e.g., "mycompany"
+    sap_base_url: str = ""  # e.g., "https://api.sap.mycompany.com"
+    roboflow_workspace: str = ""  # e.g., "mycompany"
 
     @property
     def users_dir(self) -> Path:

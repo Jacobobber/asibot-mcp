@@ -59,14 +59,38 @@ src/asibot/
 
 All settings use the `ASIBOT_` env prefix. Copy `.env.example` to `.env`:
 
+### Server
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ASIBOT_TRANSPORT` | `stdio` | `stdio` (Claude Desktop) or `streamable-http` (web) |
 | `ASIBOT_HOST` | `0.0.0.0` | HTTP server bind address |
 | `ASIBOT_PORT` | `8080` | HTTP server port |
-| `ASIBOT_SHAREPOINT_TENANT_ID` | | Azure AD tenant ID (required for SSO) |
-| `ASIBOT_SHAREPOINT_CLIENT_ID` | | Azure AD app client ID (required for SSO) |
-| `ASIBOT_SHAREPOINT_SITE_URL` | | Default SharePoint site (e.g., `company.sharepoint.com`) |
+
+### SSO & OAuth (admin-configured)
+
+| Variable | Description |
+|----------|-------------|
+| `ASIBOT_SHAREPOINT_TENANT_ID` | Azure AD tenant ID (required for Microsoft SSO) |
+| `ASIBOT_SHAREPOINT_CLIENT_ID` | Azure AD app client ID (required for Microsoft SSO) |
+| `ASIBOT_SHAREPOINT_SITE_URL` | Default SharePoint site (e.g., `company.sharepoint.com`) |
+| `ASIBOT_GITHUB_CLIENT_ID` | GitHub OAuth App client ID (enables zero-input GitHub setup) |
+| `ASIBOT_GOOGLE_CLIENT_ID` | Google OAuth client ID (enables zero-input Google setup) |
+| `ASIBOT_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+
+### Business Defaults (admin sets once, users never see these)
+
+When configured, users only need to provide their personal token — org/domain/URL are injected automatically.
+
+| Variable | Description |
+|----------|-------------|
+| `ASIBOT_GITHUB_ORG` | GitHub organization name |
+| `ASIBOT_ATLASSIAN_DOMAIN` | Jira/Confluence domain (e.g., `company.atlassian.net`) |
+| `ASIBOT_ZENDESK_SUBDOMAIN` | Zendesk subdomain (e.g., `company`) |
+| `ASIBOT_SALESFORCE_INSTANCE_URL` | Salesforce instance URL (e.g., `https://company.my.salesforce.com`) |
+| `ASIBOT_SHAREFILE_SUBDOMAIN` | Citrix ShareFile subdomain |
+| `ASIBOT_SAP_BASE_URL` | SAP API base URL (HTTPS) |
+| `ASIBOT_ROBOFLOW_WORKSPACE` | Roboflow workspace name |
 
 ## User Setup
 
@@ -101,32 +125,32 @@ For local dev with a single user, the API key header is optional — the server 
 
 Each connector is auto-discovered at startup. Users connect services individually via `asibot_connect`.
 
-| Connector | Auth Type | What You Need |
-|-----------|-----------|---------------|
-| **SharePoint** | Microsoft SSO | Handled by `asibot_setup` |
-| **Outlook** | Microsoft SSO | Handled by `asibot_setup` |
-| **Teams** | Microsoft SSO | Handled by `asibot_setup` |
-| **Calendar** | Microsoft SSO | Handled by `asibot_setup` |
-| **GitHub** | Personal Access Token | Token + org name |
-| **Jira** | Email + API Token | Email, token, domain (e.g., `company.atlassian.net`) |
-| **Confluence** | Email + API Token | Same as Jira |
-| **Notion** | Integration Token | Internal integration token |
-| **Zendesk** | Email + API Token | Subdomain, email, token |
-| **HubSpot** | Private App Token | Access token |
-| **Salesforce** | OAuth Token | Instance URL + token |
-| **Google Workspace** | OAuth Token | OAuth access token |
+| Connector | Auth | User Provides |
+|-----------|------|---------------|
+| **SharePoint** | Microsoft SSO | Nothing (browser sign-in) |
+| **Outlook** | Microsoft SSO | Nothing (browser sign-in) |
+| **Teams** | Microsoft SSO | Nothing (browser sign-in) |
+| **Calendar** | Microsoft SSO | Nothing (browser sign-in) |
+| **GitHub** | OAuth device flow | Nothing (browser sign-in) |
+| **Google Workspace** | OAuth device flow | Nothing (browser sign-in) |
+| **Jira** | API Token | Token only (email + domain auto-filled) |
+| **Confluence** | API Token | Token only (email + domain auto-filled) |
+| **Salesforce** | OAuth Token | Token only (instance URL auto-filled) |
+| **Zendesk** | API Token | Token only (email + subdomain auto-filled) |
+| **Notion** | Integration Token | Token |
+| **HubSpot** | Private App Token | Token |
 | **Figma** | Personal Access Token | Token |
-| **Zoom** | Server-to-Server OAuth | Account ID, client ID, client secret |
-| **Zapier NLA** | API Key | NLA API key |
+| **Smartsheet** | Bearer Token | Token |
 | **Adobe Sign** | OAuth Token | Token |
 | **RingCentral** | OAuth Token | Token |
-| **Roboflow** | API Key | API key + workspace |
-| **Smartsheet** | Bearer Token | API token |
-| **Paylocity** | Client Credentials OAuth | Client ID, client secret, company ID |
 | **SAP Concur** | OAuth Token | Token |
-| **Citrix ShareFile** | OAuth Token | Token + subdomain |
-| **SAP** | Bearer Token | Base URL (HTTPS) + token |
-| **LinkSquares** | Bearer Token | API token |
+| **LinkSquares** | Bearer Token | Token |
+| **Zapier NLA** | API Key | API key |
+| **Roboflow** | API Key | API key only (workspace auto-filled) |
+| **SAP** | Bearer Token | Token only (base URL auto-filled) |
+| **Citrix ShareFile** | OAuth Token | Token only (subdomain auto-filled) |
+| **Zoom** | Server-to-Server OAuth | Account ID, client ID, client secret |
+| **Paylocity** | Client Credentials | Client ID, client secret, company ID |
 
 ### Adding a New Connector
 

@@ -205,6 +205,205 @@ async def _complete_setup(
     logger.error("Setup timed out")
 
 
+# --- GitHub Device Code OAuth ---
+
+
+async def _github_device_flow(user_id: str) -> str:
+    """Start a GitHub device code OAuth flow."""
+    client_id = settings.github_client_id
+    async with httpx.AsyncClient() as http:
+        resp = await http.post(
+            "https://github.com/login/device/code",
+            data={"client_id": client_id, "scope": "repo read:org"},
+            headers={"Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    device_code = data["device_code"]
+    user_code = data["user_code"]
+    verification_uri = data["verification_uri"]
+    expires_in = data.get("expires_in", 900)
+    interval = data.get("interval", 5)
+
+    setup_id = secrets.token_urlsafe(16)
+
+    _cleanup_pending_setups()
+    if len(_pending_setups) >= _MAX_PENDING_SETUPS:
+        return "Too many pending setups. Please try again later."
+
+    asyncio.create_task(_complete_github_oauth(
+        client_id, device_code, expires_in, interval, setup_id, user_id,
+    ))
+
+    audit.log_tool_call(user_id, "asibot_connect", {"service": "github"})
+    return (
+        f"Let's connect GitHub!\n\n"
+        f"1. Go to: {verification_uri}\n"
+        f"2. Enter code: **{user_code}**\n"
+        f"3. Authorize the app\n\n"
+        f"Call asibot_setup_status with setup_id=\"{setup_id}\" when done.\n"
+        f"(Waiting up to {expires_in // 60} minutes...)"
+    )
+
+
+async def _complete_github_oauth(
+    client_id: str, device_code: str, expires_in: int, interval: int,
+    setup_id: str, user_id: str,
+) -> None:
+    """Poll GitHub for OAuth token, then store credentials."""
+    deadline = time.time() + expires_in
+
+    while time.time() < deadline:
+        await asyncio.sleep(interval)
+        try:
+            async with httpx.AsyncClient() as http:
+                resp = await http.post(
+                    "https://github.com/login/oauth/access_token",
+                    data={
+                        "client_id": client_id,
+                        "device_code": device_code,
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    },
+                    headers={"Accept": "application/json"},
+                )
+        except httpx.RequestError as e:
+            logger.warning("GitHub OAuth poll failed: %s", e)
+            continue
+
+        data = resp.json()
+        if "access_token" in data:
+            token = data["access_token"]
+            # Store the token as GitHub credentials
+            token_store.set_credentials(user_id, "github", {"token": token})
+            _pending_setups[setup_id] = {
+                "status": "complete",
+                "user": {"name": user_id, "user_id": user_id, "api_key": ""},
+                "_service": "github",
+                "_created_at": time.time(),
+            }
+            logger.info("GitHub OAuth complete for %s", user_id)
+            return
+
+        error = data.get("error", "")
+        if error == "authorization_pending":
+            continue
+        elif error == "slow_down":
+            interval += 5
+        else:
+            _pending_setups[setup_id] = {
+                "status": "failed",
+                "error": data.get("error_description", error),
+                "_created_at": time.time(),
+            }
+            logger.error("GitHub OAuth failed: %s", data.get("error_description", error))
+            return
+
+    _pending_setups[setup_id] = {"status": "expired", "_created_at": time.time()}
+
+
+# --- Google Device Code OAuth ---
+
+
+async def _google_device_flow(user_id: str) -> str:
+    """Start a Google device code OAuth flow."""
+    client_id = settings.google_client_id
+    scopes = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/calendar.readonly"
+    async with httpx.AsyncClient() as http:
+        resp = await http.post(
+            "https://oauth2.googleapis.com/device/code",
+            data={"client_id": client_id, "scope": scopes},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    device_code = data["device_code"]
+    user_code = data["user_code"]
+    verification_url = data["verification_url"]
+    expires_in = data.get("expires_in", 1800)
+    interval = data.get("interval", 5)
+
+    setup_id = secrets.token_urlsafe(16)
+
+    _cleanup_pending_setups()
+    if len(_pending_setups) >= _MAX_PENDING_SETUPS:
+        return "Too many pending setups. Please try again later."
+
+    asyncio.create_task(_complete_google_oauth(
+        device_code, expires_in, interval, setup_id, user_id,
+    ))
+
+    audit.log_tool_call(user_id, "asibot_connect", {"service": "google"})
+    return (
+        f"Let's connect Google Workspace!\n\n"
+        f"1. Go to: {verification_url}\n"
+        f"2. Enter code: **{user_code}**\n"
+        f"3. Sign in with your Google account\n\n"
+        f"Call asibot_setup_status with setup_id=\"{setup_id}\" when done.\n"
+        f"(Waiting up to {expires_in // 60} minutes...)"
+    )
+
+
+async def _complete_google_oauth(
+    device_code: str, expires_in: int, interval: int,
+    setup_id: str, user_id: str,
+) -> None:
+    """Poll Google for OAuth token, then store credentials."""
+    client_id = settings.google_client_id
+    client_secret = settings.google_client_secret
+    deadline = time.time() + expires_in
+
+    while time.time() < deadline:
+        await asyncio.sleep(interval)
+        try:
+            async with httpx.AsyncClient() as http:
+                resp = await http.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "device_code": device_code,
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    },
+                )
+        except httpx.RequestError as e:
+            logger.warning("Google OAuth poll failed: %s", e)
+            continue
+
+        data = resp.json()
+        if "access_token" in data:
+            creds = {"token": data["access_token"]}
+            if data.get("refresh_token"):
+                creds["refresh_token"] = data["refresh_token"]
+            if data.get("expires_in"):
+                creds["expires_at"] = str(time.time() + data["expires_in"])
+            token_store.set_credentials(user_id, "google", creds)
+            _pending_setups[setup_id] = {
+                "status": "complete",
+                "user": {"name": user_id, "user_id": user_id, "api_key": ""},
+                "_service": "google",
+                "_created_at": time.time(),
+            }
+            logger.info("Google OAuth complete for %s", user_id)
+            return
+
+        error = data.get("error", "")
+        if error == "authorization_pending":
+            continue
+        elif error == "slow_down":
+            interval += 5
+        else:
+            _pending_setups[setup_id] = {
+                "status": "failed",
+                "error": data.get("error_description", error),
+                "_created_at": time.time(),
+            }
+            logger.error("Google OAuth failed: %s", data.get("error_description", error))
+            return
+
+    _pending_setups[setup_id] = {"status": "expired", "_created_at": time.time()}
+
+
 @mcp.tool()
 async def asibot_setup_status(setup_id: str = "") -> str:
     """Check if your account setup is complete. Call this after signing in via browser.
@@ -228,7 +427,14 @@ async def asibot_setup_status(setup_id: str = "") -> str:
 
     if result["status"] == "complete":
         user = result["user"]
+        svc = result.get("_service")
         _pending_setups.pop(setup_id, None)
+
+        # Service OAuth completions (GitHub, Google) — no API key to show
+        if svc:
+            return f"Connected to {svc} successfully! You can now use {svc} tools."
+
+        # Account setup completion (Microsoft SSO) — show API key + config
         return (
             f"Setup complete!\n\n"
             f"Name: {user['name']}\n"
@@ -297,6 +503,19 @@ async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
     if err:
         return err
 
+    # OAuth services — start device code flow directly
+    if service == "github" and settings.github_client_id:
+        existing = token_store.get_credentials(user_id, "github")
+        if existing:
+            return f"Already connected to GitHub. To reconnect, disconnect first."
+        return await _github_device_flow(user_id)
+
+    if service == "google" and settings.google_client_id:
+        existing = token_store.get_credentials(user_id, "google")
+        if existing:
+            return f"Already connected to Google. To reconnect, disconnect first."
+        return await _google_device_flow(user_id)
+
     schema = token_store.SERVICE_SCHEMAS.get(service)
     if not schema:
         available = ", ".join(sorted(token_store.SERVICE_SCHEMAS.keys()))
@@ -310,16 +529,19 @@ async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
             f"'disconnect from {service}' first, then connect again."
         )
 
-    fields = schema["fields"]
-    labels = schema["labels"]
+    fields, labels = token_store.get_required_fields(service)
+    if not fields:
+        # All fields are server-configured — nothing for user to do (shouldn't happen)
+        return f"{service} is fully configured by the server. No credentials needed."
+
     instructions = "\n".join(f"  - {label}" for label in labels)
     audit.log_tool_call(user_id, "asibot_connect", {"service": service})
     return (
-        f"To connect {service}, I need these credentials:\n{instructions}\n\n"
-        f"Please provide them by calling asibot_set_credentials with:\n"
+        f"To connect {service}, I need:\n{instructions}\n\n"
+        f"Call asibot_set_credentials with:\n"
         f"  service: \"{service}\"\n"
-        f"  credentials: a JSON string like {{{', '.join(f'\"{f}\": \"...\"' for f in fields)}}}\n\n"
-        f"These are stored securely per-user on the server."
+        f"  credentials: {{{', '.join(f'\"{f}\": \"...\"' for f in fields)}}}\n\n"
+        f"Stored securely per-user on the server."
     )
 
 
@@ -347,7 +569,8 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
     if not isinstance(creds, dict):
         return "Credentials must be a JSON object, not an array or other type."
 
-    missing = [f for f in schema["fields"] if not creds.get(f)]
+    required_fields, _ = token_store.get_required_fields(service)
+    missing = [f for f in required_fields if not creds.get(f)]
     if missing:
         return f"Missing required fields: {', '.join(missing)}"
 

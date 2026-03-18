@@ -210,9 +210,52 @@ def _save_creds(user_id: str, data: dict) -> None:
     save_encrypted(_creds_path(user_id), data)
 
 
+def _apply_defaults(service: str, creds: dict, user_id: str = "") -> dict:
+    """Merge server-level business defaults into user credentials.
+
+    Admin-configured values (org, domain, subdomain, etc.) are injected so
+    users only need to provide personal secrets (tokens/keys).
+    """
+    from asibot.config import settings
+
+    defaults: dict[str, str] = {}
+
+    if service == "github" and settings.github_org:
+        defaults["org"] = settings.github_org
+    elif service in ("atlassian", "confluence") and settings.atlassian_domain:
+        defaults["domain"] = settings.atlassian_domain
+    elif service == "zendesk" and settings.zendesk_subdomain:
+        defaults["subdomain"] = settings.zendesk_subdomain
+    elif service == "salesforce" and settings.salesforce_instance_url:
+        defaults["instance_url"] = settings.salesforce_instance_url
+    elif service == "sharefile" and settings.sharefile_subdomain:
+        defaults["subdomain"] = settings.sharefile_subdomain
+    elif service == "sap" and settings.sap_base_url:
+        defaults["base_url"] = settings.sap_base_url
+    elif service == "roboflow" and settings.roboflow_workspace:
+        defaults["workspace"] = settings.roboflow_workspace
+
+    # Auto-fill email for basic-auth services from the user's SSO profile
+    if service in ("atlassian", "confluence", "zendesk") and user_id and "email" not in creds:
+        from asibot import auth
+        user = auth.get_user_by_email(user_id)
+        if user:
+            defaults["email"] = user["user_id"]
+
+    # User-provided values always win over defaults
+    merged = {**defaults, **creds}
+    return merged
+
+
 def get_credentials(user_id: str, service: str) -> dict:
-    """Get credentials for a service. Returns empty dict if not set."""
-    return _load_creds(user_id).get(service, {})
+    """Get credentials for a service with business defaults merged in.
+
+    Returns empty dict if no credentials stored.
+    """
+    raw = _load_creds(user_id).get(service, {})
+    if not raw:
+        return {}
+    return _apply_defaults(service, raw, user_id)
 
 
 def set_credentials(user_id: str, service: str, creds: dict) -> None:
@@ -349,26 +392,78 @@ def require_service(
 
 
 SERVICE_SCHEMAS: dict[str, dict] = {
-    "github": {"fields": ["token", "org"], "labels": ["Personal Access Token", "Organization name"]},
-    "atlassian": {"fields": ["email", "api_token", "domain"], "labels": ["Email", "API Token", "Domain (e.g., company.atlassian.net)"]},
+    "github": {"fields": ["token"], "labels": ["Personal Access Token"], "server_fields": ["org"]},
+    "atlassian": {"fields": ["api_token"], "labels": ["API Token"], "server_fields": ["email", "domain"]},
     "notion": {"fields": ["token"], "labels": ["Integration Token"]},
-    "zendesk": {"fields": ["subdomain", "email", "api_token"], "labels": ["Subdomain", "Email", "API Token"]},
+    "zendesk": {"fields": ["api_token"], "labels": ["API Token"], "server_fields": ["email", "subdomain"]},
     "hubspot": {"fields": ["token"], "labels": ["Private App Access Token"]},
     "figma": {"fields": ["token"], "labels": ["Personal Access Token"]},
-    "salesforce": {"fields": ["instance_url", "token"], "labels": ["Instance URL", "Access Token"]},
+    "salesforce": {"fields": ["token"], "labels": ["Access Token"], "server_fields": ["instance_url"]},
     "google": {"fields": ["token"], "labels": ["OAuth Token"]},
     "zapier": {"fields": ["api_key"], "labels": ["NLA API Key"]},
     "adobe_sign": {"fields": ["token"], "labels": ["OAuth Token"]},
     "ringcentral": {"fields": ["token"], "labels": ["OAuth Token"]},
-    "roboflow": {"fields": ["api_key", "workspace"], "labels": ["API Key", "Workspace"]},
+    "roboflow": {"fields": ["api_key"], "labels": ["API Key"], "server_fields": ["workspace"]},
     "smartsheet": {"fields": ["token"], "labels": ["API Token"]},
     "zoom": {"fields": ["account_id", "client_id", "client_secret"], "labels": ["Account ID", "Client ID", "Client Secret"]},
     "concur": {"fields": ["token"], "labels": ["OAuth Token"]},
     "paylocity": {"fields": ["client_id", "client_secret", "company_id"], "labels": ["Client ID", "Client Secret", "Company ID"]},
-    "sharefile": {"fields": ["token", "subdomain"], "labels": ["OAuth Token", "Subdomain"]},
-    "sap": {"fields": ["base_url", "token"], "labels": ["Base URL", "API Token"]},
+    "sharefile": {"fields": ["token"], "labels": ["OAuth Token"], "server_fields": ["subdomain"]},
+    "sap": {"fields": ["token"], "labels": ["API Token"], "server_fields": ["base_url"]},
     "linksquares": {"fields": ["token"], "labels": ["API Token"]},
 }
+
+
+def get_required_fields(service: str) -> tuple[list[str], list[str]]:
+    """Return (fields, labels) the user actually needs to provide.
+
+    Server-configured fields are excluded if their config value is set.
+    """
+    from asibot.config import settings
+
+    schema = SERVICE_SCHEMAS.get(service)
+    if not schema:
+        return [], []
+
+    fields = list(schema["fields"])
+    labels = list(schema["labels"])
+
+    # Check which server_fields are NOT yet configured — user must provide those
+    for sf in schema.get("server_fields", []):
+        has_default = False
+        if sf == "org" and settings.github_org:
+            has_default = True
+        elif sf == "domain" and settings.atlassian_domain:
+            has_default = True
+        elif sf == "subdomain":
+            if service == "zendesk" and settings.zendesk_subdomain:
+                has_default = True
+            elif service == "sharefile" and settings.sharefile_subdomain:
+                has_default = True
+        elif sf == "instance_url" and settings.salesforce_instance_url:
+            has_default = True
+        elif sf == "base_url" and settings.sap_base_url:
+            has_default = True
+        elif sf == "workspace" and settings.roboflow_workspace:
+            has_default = True
+        elif sf == "email":
+            has_default = True  # always auto-filled from SSO profile
+
+        if not has_default:
+            # Config not set — user must provide this field
+            label_map = {
+                "org": "Organization name",
+                "domain": "Domain (e.g., company.atlassian.net)",
+                "subdomain": "Subdomain",
+                "instance_url": "Instance URL",
+                "base_url": "Base URL (HTTPS)",
+                "workspace": "Workspace",
+                "email": "Email",
+            }
+            fields.append(sf)
+            labels.append(label_map.get(sf, sf))
+
+    return fields, labels
 
 # Microsoft services (auth handled by microsoft.py, not credentials.json)
 MICROSOFT_SERVICES = ["sharepoint", "outlook", "calendar", "teams"]

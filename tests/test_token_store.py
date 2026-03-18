@@ -369,3 +369,105 @@ class TestSchemaVersioning:
         with _patch_crypto(tmp_path), patch.object(user_session, "get_user_data_dir", return_value=user_dir):
             data = token_store._load_creds("testuser@example.com")
             assert data == {}
+
+
+class TestApplyDefaults:
+    """Test that server-configured business defaults are merged into credentials."""
+
+    def test_github_org_injected(self, tmp_path):
+        user_dir = _setup_user_dir(tmp_path)
+        with (
+            _patch_crypto(tmp_path),
+            patch.object(user_session, "get_user_data_dir", return_value=user_dir),
+            patch.object(settings, "github_org", "mycompany"),
+        ):
+            token_store.set_credentials("testuser@example.com", "github", {"token": "ghp_xxx"})
+            creds = token_store.get_credentials("testuser@example.com", "github")
+            assert creds["token"] == "ghp_xxx"
+            assert creds["org"] == "mycompany"
+
+    def test_user_value_overrides_default(self, tmp_path):
+        user_dir = _setup_user_dir(tmp_path)
+        with (
+            _patch_crypto(tmp_path),
+            patch.object(user_session, "get_user_data_dir", return_value=user_dir),
+            patch.object(settings, "github_org", "default-org"),
+        ):
+            token_store.set_credentials("testuser@example.com", "github", {"token": "t", "org": "custom-org"})
+            creds = token_store.get_credentials("testuser@example.com", "github")
+            assert creds["org"] == "custom-org"  # user wins
+
+    def test_atlassian_domain_and_email_injected(self, tmp_path):
+        user_dir = _setup_user_dir(tmp_path)
+        with (
+            _patch_crypto(tmp_path),
+            patch.object(user_session, "get_user_data_dir", return_value=user_dir),
+            patch.object(settings, "atlassian_domain", "myco.atlassian.net"),
+        ):
+            from asibot import auth as real_auth
+            with patch.object(real_auth, "_users", {}), patch.object(real_auth, "_store_path", tmp_path / "users.json"):
+                real_auth.create_user("alice@myco.com", "Alice")
+                token_store.set_credentials("alice@myco.com", "atlassian", {"api_token": "tok123"})
+                creds = token_store.get_credentials("alice@myco.com", "atlassian")
+                assert creds["api_token"] == "tok123"
+                assert creds["domain"] == "myco.atlassian.net"
+                assert creds["email"] == "alice@myco.com"
+
+    def test_salesforce_instance_url_injected(self, tmp_path):
+        user_dir = _setup_user_dir(tmp_path)
+        with (
+            _patch_crypto(tmp_path),
+            patch.object(user_session, "get_user_data_dir", return_value=user_dir),
+            patch.object(settings, "salesforce_instance_url", "https://myco.my.salesforce.com"),
+        ):
+            token_store.set_credentials("testuser@example.com", "salesforce", {"token": "sf_tok"})
+            creds = token_store.get_credentials("testuser@example.com", "salesforce")
+            assert creds["instance_url"] == "https://myco.my.salesforce.com"
+
+    def test_no_defaults_when_config_empty(self, tmp_path):
+        user_dir = _setup_user_dir(tmp_path)
+        with (
+            _patch_crypto(tmp_path),
+            patch.object(user_session, "get_user_data_dir", return_value=user_dir),
+            patch.object(settings, "github_org", ""),
+        ):
+            token_store.set_credentials("testuser@example.com", "github", {"token": "t"})
+            creds = token_store.get_credentials("testuser@example.com", "github")
+            assert "org" not in creds  # no default configured
+
+    def test_empty_creds_not_merged(self, tmp_path):
+        """get_credentials returns {} when no creds stored, even with defaults configured."""
+        user_dir = _setup_user_dir(tmp_path)
+        with (
+            _patch_crypto(tmp_path),
+            patch.object(user_session, "get_user_data_dir", return_value=user_dir),
+            patch.object(settings, "github_org", "mycompany"),
+        ):
+            creds = token_store.get_credentials("testuser@example.com", "github")
+            assert creds == {}
+
+
+class TestGetRequiredFields:
+    def test_github_token_only_when_org_configured(self):
+        with patch.object(settings, "github_org", "mycompany"):
+            fields, labels = token_store.get_required_fields("github")
+            assert fields == ["token"]
+            assert "org" not in fields
+
+    def test_github_needs_org_when_not_configured(self):
+        with patch.object(settings, "github_org", ""):
+            fields, labels = token_store.get_required_fields("github")
+            assert "token" in fields
+            assert "org" in fields
+
+    def test_atlassian_token_only_when_domain_configured(self):
+        with patch.object(settings, "atlassian_domain", "myco.atlassian.net"):
+            fields, labels = token_store.get_required_fields("atlassian")
+            assert fields == ["api_token"]
+            assert "domain" not in fields
+            assert "email" not in fields
+
+    def test_unknown_service_returns_empty(self):
+        fields, labels = token_store.get_required_fields("nonexistent")
+        assert fields == []
+        assert labels == []
