@@ -5,12 +5,15 @@ import atexit
 import json
 import logging
 import secrets
+import signal
 import time
+from collections import deque
+from typing import Any, Awaitable, Callable
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import audit, auth, token_store, user_session
+from asibot import audit, auth, db, http_pool, metrics, migrate, token_store, user_session
 from asibot.connectors import microsoft
 from asibot.config import settings
 from asibot.connectors import registry
@@ -36,6 +39,115 @@ mcp = FastMCP(
 )
 
 
+# --- Instrumentation ---
+
+
+def _install_tool_tracking() -> None:
+    """Monkey-patch ToolManager.call_tool to audit-log every tool invocation.
+
+    This is the single convergence point for ALL tool calls (system + connector),
+    so we get universal coverage without modifying individual tool functions.
+    """
+    original_call_tool = mcp._tool_manager.call_tool
+
+    async def _tracked_call_tool(name, arguments, *, context=None, **kwargs):
+        # Resolve user_id from context (hits session cache first — lightweight)
+        user_id = "anonymous"
+        if context is not None:
+            try:
+                uid, _ = await user_session.require_user(context)
+                if uid:
+                    user_id = uid
+            except Exception:
+                pass  # Don't let auth errors block the tool call
+
+        start = time.monotonic()
+        success = True
+        error_type = None
+        try:
+            result = await original_call_tool(name, arguments, context=context, **kwargs)
+            return result
+        except Exception as e:
+            success = False
+            error_type = type(e).__name__
+            raise
+        finally:
+            latency_ms = (time.monotonic() - start) * 1000
+            service = audit._infer_service(name)
+
+            # JSONL audit log (rotating file)
+            audit.log_tool_call(
+                user_id, name, arguments,
+                latency_ms=latency_ms,
+                success=success,
+                error_type=error_type,
+                service=service,
+            )
+            # SQLite audit log (primary store for analytics)
+            try:
+                await db.log_audit(
+                    user_id, name, json.dumps(arguments or {}),
+                    service=service,
+                    success=success,
+                    latency_ms=latency_ms,
+                    error_type=error_type,
+                )
+            except Exception:
+                pass  # Best-effort; JSONL is the backup record
+            # Prometheus metrics
+            status = "ok" if success else "error"
+            metrics.request_duration.labels(
+                service=service or "system", status=status,
+            ).observe(latency_ms / 1000)
+            metrics.request_total.labels(
+                service=service or "system", status=status,
+            ).inc()
+
+    mcp._tool_manager.call_tool = _tracked_call_tool
+    logger.info("Universal tool tracking installed")
+
+
+def _install_session_tracking() -> None:
+    """Wrap FastMCP.list_tools to log session activity.
+
+    Clients send ListToolsRequest on connect and reconnect, so this serves
+    as a proxy for "user X started a session at time T" — even when no
+    tools are actually called.
+    """
+    original_list_tools = mcp.list_tools
+
+    async def _tracked_list_tools() -> list:
+        result = await original_list_tools()
+
+        # Resolve user from request context (best-effort)
+        ctx = mcp.get_context()
+        user_id = "anonymous"
+        try:
+            uid, _ = await user_session.require_user(ctx)
+            if uid:
+                user_id = uid
+        except Exception:
+            pass
+
+        audit.log_event(user_id, "session_start", metadata={
+            "tools_available": len(result),
+        })
+        try:
+            await db.log_event(user_id, "session_start", metadata={
+                "tools_available": len(result),
+            })
+        except Exception:
+            pass
+        metrics.active_sessions.inc()
+
+        return result
+
+    mcp.list_tools = _tracked_list_tools
+    # Re-register with the low-level MCP server so it uses our wrapper
+    mcp._mcp_server.list_tools()(_tracked_list_tools)
+    logger.info("Session tracking installed")
+
+
 # --- Setup & Identity ---
 
 
@@ -46,10 +158,14 @@ async def asibot_setup(ctx: Context) -> str:
     After setup, you'll get a config snippet to paste into your Claude Desktop settings.
     You only need to do this once — after that, you're automatically authenticated.
     """
+    _ensure_cleanup_tasks()
+    rate_err = _check_setup_rate_limit()
+    if rate_err:
+        return rate_err
     # Check if already authenticated
-    user_id, _ = user_session.require_user(ctx)
+    user_id, _ = await user_session.require_user(ctx)
     if user_id:
-        user = auth.get_user_by_email(user_id)
+        user = await auth.get_user_by_email(user_id)
         if user:
             return (
                 f"You're already set up as {user['name']} ({user['user_id']}).\n\n"
@@ -76,14 +192,16 @@ async def asibot_setup(ctx: Context) -> str:
         resp.raise_for_status()
         data = resp.json()
 
-    device_code = data["device_code"]
-    user_code = data["user_code"]
-    verification_uri = data["verification_uri"]
+    device_code = data.get("device_code")
+    user_code = data.get("user_code")
+    verification_uri = data.get("verification_uri")
+    if not all([device_code, user_code, verification_uri]):
+        return "Microsoft device code flow returned an incomplete response. Please try again."
     expires_in = data.get("expires_in", 900)
     interval = data.get("interval", 5)
 
     # Generate a cryptographic setup_id (not derived from device_code)
-    setup_id = secrets.token_urlsafe(16)
+    setup_id = secrets.token_urlsafe(32)
 
     # Enforce size cap and clean up expired entries before adding
     async with _pending_setups_lock:
@@ -115,6 +233,31 @@ _pending_setups_lock = asyncio.Lock()
 _SETUP_TTL = 900  # 15 minutes — matches device code expiry
 _MAX_PENDING_SETUPS = 100
 
+# Global rate limit for setup/OAuth flow requests (prevents enumeration & DoS)
+_SETUP_RATE_LIMIT = 10  # max new setups per window
+_SETUP_RATE_WINDOW = 60  # seconds
+_setup_timestamps: deque[float] = deque()
+
+
+def _check_setup_rate_limit() -> str | None:
+    """Check global rate limit for setup endpoint. Returns error msg or None."""
+    now = time.time()
+    cutoff = now - _SETUP_RATE_WINDOW
+    while _setup_timestamps and _setup_timestamps[0] < cutoff:
+        _setup_timestamps.popleft()  # O(1) vs list.pop(0) O(n)
+    if len(_setup_timestamps) >= _SETUP_RATE_LIMIT:
+        return "Too many setup requests. Please wait a minute and try again."
+    _setup_timestamps.append(now)
+    return None
+
+
+# Allowed OAuth token endpoint prefixes — prevents redirection attacks
+_ALLOWED_TOKEN_HOSTS = frozenset({
+    "https://login.microsoftonline.com",
+    "https://github.com",
+    "https://oauth2.googleapis.com",
+})
+
 
 def _on_task_done(task: asyncio.Task, setup_id: str) -> None:
     """Log unhandled exceptions from background setup tasks and mark them failed."""
@@ -123,86 +266,157 @@ def _on_task_done(task: asyncio.Task, setup_id: str) -> None:
     exc = task.exception()
     if exc:
         logger.error("Background setup task %s failed: %s", setup_id, exc)
-        _pending_setups[setup_id] = {
+        # Done callbacks are synchronous — schedule a locked write
+        task.get_loop().create_task(_set_pending_setup(setup_id, {
             "status": "failed",
             "error": f"Internal error: {exc}",
             "_created_at": time.time(),
-        }
+        }))
 
 
 def _cleanup_pending_setups() -> None:
-    """Remove expired entries from _pending_setups."""
+    """Remove expired entries from _pending_setups. Caller must hold _pending_setups_lock."""
     now = time.time()
     expired = [k for k, v in _pending_setups.items() if now - v.get("_created_at", 0) > _SETUP_TTL]
     for k in expired:
         _pending_setups.pop(k, None)
 
 
-async def _complete_setup(
-    tenant_id: str, client_id: str, device_code: str, expires_in: int, interval: int,
-    setup_id: str = "",
+async def _set_pending_setup(setup_id: str, value: dict) -> None:
+    """Write to _pending_setups under the lock."""
+    async with _pending_setups_lock:
+        _pending_setups[setup_id] = value
+
+
+# --- Background Task Management ---
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _schedule_periodic(coro_factory: Callable[[], Awaitable], interval: float, name: str) -> asyncio.Task:
+    """Schedule a repeating background task with error isolation."""
+    async def _loop() -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await coro_factory()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Background task %s failed", name)
+
+    task = asyncio.create_task(_loop(), name=name)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+_cleanup_started = False
+
+
+async def _init_db_once() -> None:
+    """Initialize database and run migration if needed (idempotent)."""
+    await db.init_db()
+    if await migrate.needs_migration():
+        logger.info("Migrating existing data to SQLite...")
+        summary = await migrate.migrate_from_files()
+        logger.info("Migration summary: %s", summary)
+
+
+def _ensure_cleanup_tasks() -> None:
+    """Start all periodic background tasks (idempotent)."""
+    global _cleanup_started
+    if _cleanup_started:
+        return
+    _cleanup_started = True
+
+    # Initialize database (fire-and-forget on first call, safe because
+    # db.init_db() is idempotent and subsequent DB calls will await it)
+    asyncio.ensure_future(_init_db_once())
+
+    async def _cleanup_setups() -> None:
+        async with _pending_setups_lock:
+            _cleanup_pending_setups()
+
+    async def _prune_audit() -> None:
+        await db.prune_audit()
+
+    async def _cleanup_sessions() -> None:
+        await db.cleanup_expired_sessions()
+
+    _schedule_periodic(_cleanup_setups, 300, "setup-cleanup")
+    _schedule_periodic(http_pool.cleanup_idle, 60, "pool-idle-cleanup")
+    _schedule_periodic(_cleanup_rate_limits, 300, "rate-limit-cleanup")
+    _schedule_periodic(_cleanup_ms_clients, 300, "ms-client-cleanup")
+    _schedule_periodic(_prune_audit, 3600, "audit-prune")
+    _schedule_periodic(_cleanup_sessions, 300, "session-cleanup")
+
+
+async def _cleanup_rate_limits() -> None:
+    """Prune stale rate-limit and S2S token cache entries."""
+    token_store.cleanup_rate_limits()
+
+
+async def _cleanup_ms_clients() -> None:
+    """Prune idle Microsoft Graph clients."""
+    await microsoft.cleanup_idle_clients()
+
+
+async def _poll_device_code(
+    *,
+    token_url: str,
+    token_data: dict,
+    token_headers: dict | None,
+    on_success: Callable[[dict], Awaitable[dict]],
+    setup_id: str,
+    expires_in: int,
+    interval: int,
+    display_name: str,
 ) -> None:
-    """Poll Microsoft for token, then create user."""
-    if not setup_id:
-        setup_id = secrets.token_urlsafe(16)
+    """Generic device code polling loop.
+
+    Polls *token_url* until an access token is returned, then calls *on_success*
+    with the token response. *on_success* should return the dict to store in
+    ``_pending_setups`` (must include ``"status": "complete"``).
+    """
+    # Validate token URL is a known OAuth provider (prevents redirection attacks)
+    if not any(token_url.startswith(host) for host in _ALLOWED_TOKEN_HOSTS):
+        await _set_pending_setup(setup_id, {
+            "status": "failed",
+            "error": f"Untrusted token endpoint: {token_url}",
+            "_created_at": time.time(),
+        })
+        logger.error("%s: untrusted token endpoint %s", display_name, token_url)
+        return
+
     deadline = time.time() + expires_in
-    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 
     while time.time() < deadline:
         await asyncio.sleep(interval)
 
         try:
             async with httpx.AsyncClient() as http:
-                resp = await http.post(token_url, data={
-                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                    "client_id": client_id,
-                    "device_code": device_code,
-                })
+                resp = await http.post(token_url, data=token_data, headers=token_headers)
         except httpx.RequestError as e:
-            logger.warning("Setup poll request failed: %s", e)
+            logger.warning("%s poll request failed: %s", display_name, e)
             continue
 
         data = resp.json()
 
         if "access_token" in data:
             try:
-                # Get user profile from Microsoft
-                async with httpx.AsyncClient() as http:
-                    profile_resp = await http.get(
-                        "https://graph.microsoft.com/v1.0/me",
-                        headers={"Authorization": f"Bearer {data['access_token']}"},
-                    )
-                    profile_resp.raise_for_status()
-                    profile = profile_resp.json()
-            except (httpx.HTTPStatusError, httpx.RequestError) as e:
-                _pending_setups[setup_id] = {
+                result = await on_success(data)
+            except Exception as e:
+                await _set_pending_setup(setup_id, {
                     "status": "failed",
-                    "error": f"Failed to fetch Microsoft profile: {e}",
+                    "error": f"{display_name} setup failed: {e}",
                     "_created_at": time.time(),
-                }
-                logger.error("Setup failed fetching profile: %s", e)
+                })
+                logger.error("%s setup failed: %s", display_name, e)
                 return
 
-            email = profile.get("mail") or profile.get("userPrincipalName", "unknown")
-            name = profile.get("displayName", email)
-
-            # Create user
-            user = auth.create_user(email, name)
-
-            # Store Microsoft token for this user (covers all MS365 services)
-            token_data = {
-                "access_token": data["access_token"],
-                "refresh_token": data.get("refresh_token", ""),
-                "expires_at": time.time() + data.get("expires_in", 3600),
-            }
-            microsoft.save_token(email, token_data)
-
-            _pending_setups[setup_id] = {
-                "user": user,
-                "status": "complete",
-                "_created_at": time.time(),
-            }
-            logger.info("Setup complete for %s (%s)", name, email)
+            await _set_pending_setup(setup_id, result)
+            logger.info("%s setup complete", display_name)
             return
 
         error = data.get("error", "")
@@ -211,22 +425,68 @@ async def _complete_setup(
         elif error == "slow_down":
             interval += 5
         else:
-            _pending_setups[setup_id] = {
+            await _set_pending_setup(setup_id, {
                 "status": "failed",
                 "error": data.get("error_description", error),
                 "_created_at": time.time(),
-            }
-            logger.error("Setup failed: %s", data.get("error_description", error))
+            })
+            logger.error("%s failed: %s", display_name, data.get("error_description", error))
             return
 
-    _pending_setups[setup_id] = {"status": "expired", "_created_at": time.time()}
-    logger.error("Setup timed out")
+    await _set_pending_setup(setup_id, {"status": "expired", "_created_at": time.time()})
+    logger.error("%s timed out", display_name)
+
+
+async def _complete_setup(
+    tenant_id: str, client_id: str, device_code: str, expires_in: int, interval: int,
+    setup_id: str = "",
+) -> None:
+    """Poll Microsoft for token, then create user."""
+    if not setup_id:
+        setup_id = secrets.token_urlsafe(32)
+
+    async def on_success(data: dict) -> dict:
+        async with httpx.AsyncClient() as http:
+            profile_resp = await http.get(
+                "https://graph.microsoft.com/v1.0/me",
+                headers={"Authorization": f"Bearer {data['access_token']}"},
+            )
+            profile_resp.raise_for_status()
+            profile = profile_resp.json()
+
+        email = profile.get("mail") or profile.get("userPrincipalName", "unknown")
+        name = profile.get("displayName", email)
+        user = await auth.create_user(email, name)
+        audit.log_event(email, "user_created")
+        try:
+            await db.log_event(email, "user_created")
+        except Exception:
+            pass
+
+        microsoft.save_token(email, {
+            "access_token": data["access_token"],
+            "refresh_token": data.get("refresh_token", ""),
+            "expires_at": time.time() + data.get("expires_in", 3600),
+        })
+        return {"user": user, "status": "complete", "_created_at": time.time()}
+
+    await _poll_device_code(
+        token_url=f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+        token_data={
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id": client_id,
+            "device_code": device_code,
+        },
+        token_headers=None,
+        on_success=on_success,
+        setup_id=setup_id,
+        expires_in=expires_in,
+        interval=interval,
+        display_name="Microsoft SSO",
+    )
 
 
 # --- Device Code OAuth (shared by GitHub, Google, etc.) ---
-
-
-from typing import Any
 
 
 def _github_extract_creds(data: dict) -> dict:
@@ -288,6 +548,9 @@ _OAUTH_PROVIDERS: dict[str, dict[str, Any]] = {
 
 async def _start_device_code_flow(service: str, user_id: str) -> str:
     """Start a device code OAuth flow for any configured provider."""
+    rate_err = _check_setup_rate_limit()
+    if rate_err:
+        return rate_err
     provider = _OAUTH_PROVIDERS[service]
 
     async with httpx.AsyncClient() as http:
@@ -299,13 +562,15 @@ async def _start_device_code_flow(service: str, user_id: str) -> str:
         resp.raise_for_status()
         data = resp.json()
 
-    device_code = data["device_code"]
-    user_code = data["user_code"]
-    verification_url = data[provider["verification_url_key"]]
+    device_code = data.get("device_code")
+    user_code = data.get("user_code")
+    verification_url = data.get(provider["verification_url_key"])
+    if not all([device_code, user_code, verification_url]):
+        return f"{provider['display_name']} device code flow returned an incomplete response. Please try again."
     expires_in = data.get("expires_in", provider["default_expires_in"])
     interval = data.get("interval", 5)
 
-    setup_id = secrets.token_urlsafe(16)
+    setup_id = secrets.token_urlsafe(32)
 
     async with _pending_setups_lock:
         _cleanup_pending_setups()
@@ -319,7 +584,6 @@ async def _start_device_code_flow(service: str, user_id: str) -> str:
     task.add_done_callback(lambda t: _on_task_done(t, setup_id))
 
     display_name = provider["display_name"]
-    audit.log_tool_call(user_id, "asibot_connect", {"service": service})
     return (
         f"Let's connect {display_name}!\n\n"
         f"1. Go to: {verification_url}\n"
@@ -336,50 +600,32 @@ async def _complete_device_code_oauth(
 ) -> None:
     """Poll an OAuth provider for a token, then store credentials."""
     provider = _OAUTH_PROVIDERS[service]
-    display_name = provider["display_name"]
-    deadline = time.time() + expires_in
 
-    while time.time() < deadline:
-        await asyncio.sleep(interval)
+    async def on_success(data: dict) -> dict:
+        creds = provider["extract_creds"](data)
+        token_store.set_credentials(user_id, service, creds)
+        audit.log_event(user_id, "service_connected", service=service)
         try:
-            async with httpx.AsyncClient() as http:
-                resp = await http.post(
-                    provider["token_url"],
-                    data=provider["token_data"](device_code),
-                    headers=provider["token_headers"] or None,
-                )
-        except httpx.RequestError as e:
-            logger.warning("%s OAuth poll failed: %s", display_name, e)
-            continue
+            await db.log_event(user_id, "service_connected", service=service)
+        except Exception:
+            pass
+        return {
+            "status": "complete",
+            "user": {"name": user_id, "user_id": user_id, "api_key": ""},
+            "_service": service,
+            "_created_at": time.time(),
+        }
 
-        data = resp.json()
-        if "access_token" in data:
-            creds = provider["extract_creds"](data)
-            token_store.set_credentials(user_id, service, creds)
-            _pending_setups[setup_id] = {
-                "status": "complete",
-                "user": {"name": user_id, "user_id": user_id, "api_key": ""},
-                "_service": service,
-                "_created_at": time.time(),
-            }
-            logger.info("%s OAuth complete for %s", display_name, user_id)
-            return
-
-        error = data.get("error", "")
-        if error == "authorization_pending":
-            continue
-        elif error == "slow_down":
-            interval += 5
-        else:
-            _pending_setups[setup_id] = {
-                "status": "failed",
-                "error": data.get("error_description", error),
-                "_created_at": time.time(),
-            }
-            logger.error("%s OAuth failed: %s", display_name, data.get("error_description", error))
-            return
-
-    _pending_setups[setup_id] = {"status": "expired", "_created_at": time.time()}
+    await _poll_device_code(
+        token_url=provider["token_url"],
+        token_data=provider["token_data"](device_code),
+        token_headers=provider["token_headers"] or None,
+        on_success=on_success,
+        setup_id=setup_id,
+        expires_in=expires_in,
+        interval=interval,
+        display_name=provider["display_name"],
+    )
 
 
 @mcp.tool()
@@ -391,58 +637,60 @@ async def asibot_setup_status(setup_id: str = "") -> str:
     Args:
         setup_id: The setup ID returned by asibot_setup. If empty, checks the most recent setup.
     """
-    if setup_id:
-        result = _pending_setups.get(setup_id)
-    elif _pending_setups:
-        # Fallback: use the most recent setup for single-user convenience
-        setup_id = next(reversed(_pending_setups))
-        result = _pending_setups[setup_id]
-    else:
-        result = None
+    async with _pending_setups_lock:
+        _cleanup_pending_setups()
+        if setup_id:
+            result = _pending_setups.get(setup_id)
+        elif _pending_setups:
+            # Fallback: use the most recent setup for single-user convenience
+            setup_id = next(reversed(_pending_setups))
+            result = _pending_setups[setup_id]
+        else:
+            result = None
 
-    if not result:
-        return "No setup in progress. Call asibot_setup first."
+        if not result:
+            return "No setup in progress. Call asibot_setup first."
 
-    if result["status"] == "complete":
-        user = result["user"]
-        svc = result.get("_service")
-        _pending_setups.pop(setup_id, None)
+        if result["status"] == "complete":
+            user = result["user"]
+            svc = result.get("_service")
+            _pending_setups.pop(setup_id, None)
 
-        # Service OAuth completions (GitHub, Google) — no API key to show
-        if svc:
-            return f"Connected to {svc} successfully! You can now use {svc} tools."
+            # Service OAuth completions (GitHub, Google) — no API key to show
+            if svc:
+                return f"Connected to {svc} successfully! You can now use {svc} tools."
 
-        # Account setup completion (Microsoft SSO) — show API key + config
-        return (
-            f"Setup complete!\n\n"
-            f"Name: {user['name']}\n"
-            f"Email: {user['user_id']}\n"
-            f"API Key: {user['api_key']}\n\n"
-            f"Add this to your Claude Desktop config at %APPDATA%\\Claude\\claude_desktop_config.json:\n\n"
-            f"{_config_snippet(user['api_key'])}\n\n"
-            f"After updating the config, restart Claude Desktop. You're all set — "
-            f"every future session will authenticate automatically."
-        )
+            # Account setup completion (Microsoft SSO) — show API key + config
+            return (
+                f"Setup complete!\n\n"
+                f"Name: {user['name']}\n"
+                f"Email: {user['user_id']}\n"
+                f"API Key: {user['api_key']}\n\n"
+                f"Add this to your Claude Desktop config at %APPDATA%\\Claude\\claude_desktop_config.json:\n\n"
+                f"{_config_snippet(user['api_key'])}\n\n"
+                f"After updating the config, restart Claude Desktop. You're all set — "
+                f"every future session will authenticate automatically."
+            )
 
-    if result["status"] == "failed":
-        error = result.get("error", "Unknown error")
-        _pending_setups.pop(setup_id, None)
-        return f"Setup failed: {error}\n\nTry asibot_setup again."
+        if result["status"] == "failed":
+            error = result.get("error", "Unknown error")
+            _pending_setups.pop(setup_id, None)
+            return f"Setup failed: {error}\n\nTry asibot_setup again."
 
-    if result["status"] == "expired":
-        _pending_setups.pop(setup_id, None)
-        return "Setup timed out. Try asibot_setup again."
+        if result["status"] == "expired":
+            _pending_setups.pop(setup_id, None)
+            return "Setup timed out. Try asibot_setup again."
 
-    return "Still waiting for you to sign in via browser..."
+        return "Still waiting for you to sign in via browser..."
 
 
 @mcp.tool()
 async def asibot_whoami(ctx: Context) -> str:
     """Check which user you're authenticated as."""
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
-    user = auth.get_user_by_email(user_id)
+    user = await auth.get_user_by_email(user_id)
     if user:
         return f"Authenticated as {user['name']} ({user['user_id']})"
     return f"Authenticated as {user_id}"
@@ -454,13 +702,18 @@ async def asibot_rotate_key(ctx: Context) -> str:
 
     After rotation, update your Claude Desktop config with the new key.
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
-    user = auth.rotate_key(user_id)
+    user = await auth.rotate_key(user_id)
     if not user:
         return "Could not rotate key — user not found."
-    audit.log_tool_call(user_id, "asibot_rotate_key")
+    user_session.invalidate_user_sessions(user_id)
+    audit.log_event(user_id, "key_rotated")
+    try:
+        await db.log_event(user_id, "key_rotated")
+    except Exception:
+        pass
     return (
         f"API key rotated successfully.\n\n"
         f"New API key: {user['api_key']}\n\n"
@@ -477,7 +730,7 @@ async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
     Args:
         service: Service name (e.g., "github", "atlassian", "notion", "zendesk", "figma", etc.)
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
 
@@ -513,7 +766,6 @@ async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
         return f"{service} is fully configured by the server. No credentials needed."
 
     instructions = "\n".join(f"  - {label}" for label in labels)
-    audit.log_tool_call(user_id, "asibot_connect", {"service": service})
     return (
         f"To connect {service}, I need:\n{instructions}\n\n"
         f"Call asibot_set_credentials with:\n"
@@ -531,7 +783,7 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
         service: Service name (e.g., "github", "atlassian")
         credentials: JSON string with the required fields (e.g., '{"token": "ghp_xxx", "org": "myorg"}')
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
 
@@ -553,7 +805,11 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
         return f"Missing required fields: {', '.join(missing)}"
 
     token_store.set_credentials(user_id, service, creds)
-    audit.log_tool_call(user_id, "asibot_set_credentials", {"service": service})
+    audit.log_event(user_id, "service_connected", service=service)
+    try:
+        await db.log_event(user_id, "service_connected", service=service)
+    except Exception:
+        pass
     return f"Connected to {service} successfully. Your credentials are stored securely."
 
 
@@ -564,19 +820,23 @@ async def asibot_disconnect(service: str, ctx: Context) -> str:
     Args:
         service: Service name to disconnect
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
 
     token_store.remove_credentials(user_id, service)
-    audit.log_tool_call(user_id, "asibot_disconnect", {"service": service})
+    audit.log_event(user_id, "service_disconnected", service=service)
+    try:
+        await db.log_event(user_id, "service_disconnected", service=service)
+    except Exception:
+        pass
     return f"Disconnected from {service}. Credentials removed."
 
 
 @mcp.tool()
 async def asibot_services(ctx: Context) -> str:
     """List all available services with connection status, enabled/disabled, and read/readwrite mode."""
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
 
@@ -618,7 +878,7 @@ async def asibot_enable(service: str, ctx: Context) -> str:
     Args:
         service: Service name (e.g., "github", "sharepoint")
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
     prefs = token_store.get_service_prefs(user_id, service)
@@ -634,7 +894,7 @@ async def asibot_disable(service: str, ctx: Context) -> str:
     Args:
         service: Service name (e.g., "github", "sharepoint")
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
     prefs = token_store.get_service_prefs(user_id, service)
@@ -651,7 +911,7 @@ async def asibot_set_mode(service: str, mode: str, ctx: Context) -> str:
         service: Service name (e.g., "github", "outlook")
         mode: "read" for read-only, "readwrite" for full access
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
     if mode not in ("read", "readwrite"):
@@ -659,7 +919,6 @@ async def asibot_set_mode(service: str, mode: str, ctx: Context) -> str:
     prefs = token_store.get_service_prefs(user_id, service)
     enabled = prefs.get("enabled", True)
     token_store.set_service_prefs(user_id, service, enabled=enabled, mode=mode)
-    audit.log_tool_call(user_id, "asibot_set_mode", {"service": service, "mode": mode})
     mode_desc = "read-only" if mode == "read" else "read + write"
     return f"{service} set to {mode_desc} mode."
 
@@ -682,6 +941,24 @@ def _config_snippet(api_key: str) -> str:
         }
     }
     return json.dumps(config, indent=2)
+
+
+@mcp.tool()
+async def asibot_health() -> str:
+    """Check server health status. No authentication required."""
+    connected_connectors = len(registry.list_all())
+    async with _pending_setups_lock:
+        pending = len(_pending_setups)
+    checks = {
+        "status": "ok",
+        "data_dir_exists": settings.data_dir.exists(),
+        "connectors_loaded": connected_connectors,
+        "pending_setups": pending,
+        "transport": settings.transport,
+        "http_pool": http_pool.pool_stats(),
+        "background_tasks": len(_background_tasks),
+    }
+    return json.dumps(checks, indent=2)
 
 
 # --- Connector Setup ---
@@ -710,36 +987,95 @@ def _setup_connectors() -> None:
             logger.warning("Failed to load connector %s: %s", module_name, e)
 
     registry.register_all_tools(mcp)
+    _install_tool_tracking()
+    _install_session_tracking()
 
 
 # --- Entry Point ---
 
 
+async def _async_shutdown() -> None:
+    """Gracefully shut down all resources."""
+    logger.info("Shutting down: cancelling %d background tasks", len(_background_tasks))
+    # Cancel all background tasks
+    for task in list(_background_tasks):
+        task.cancel()
+    if _background_tasks:
+        await asyncio.gather(*_background_tasks, return_exceptions=True)
+
+    # Close connection pools, cached clients, and database
+    await http_pool.close_all()
+    await microsoft.close_all_clients()
+    await db.close_db()
+    logger.info("Shutdown complete")
+
+
 def _cleanup() -> None:
-    """Synchronous cleanup hook for atexit."""
+    """Synchronous cleanup hook for atexit — runs async shutdown."""
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            loop.create_task(microsoft.close_all_clients())
+            loop.create_task(_async_shutdown())
         else:
-            loop.run_until_complete(microsoft.close_all_clients())
+            loop.run_until_complete(_async_shutdown())
     except RuntimeError:
         pass
+
+
+def _start_dashboard() -> None:
+    """Start the analytics dashboard in a background daemon thread."""
+    try:
+        import threading
+        import uvicorn
+        from asibot.dashboard import app, _load_or_create_token, _dashboard_host, _dashboard_port
+
+        token = _load_or_create_token()
+        host = _dashboard_host()
+        port = _dashboard_port()
+        display_host = "localhost" if host == "0.0.0.0" else host
+        url = f"http://{display_host}:{port}/?token={token}"
+        link = f"\033]8;;{url}\033\\{url}\033]8;;\033\\"
+        logger.info("Dashboard: %s", link)
+
+        thread = threading.Thread(
+            target=uvicorn.run,
+            args=(app,),
+            kwargs={"host": host, "port": port, "log_level": "warning"},
+            daemon=True,
+        )
+        thread.start()
+    except Exception:
+        logger.warning("Failed to start dashboard", exc_info=True)
 
 
 def main() -> None:
     settings.ensure_dirs()
     _setup_connectors()
+    metrics.start_metrics_server(
+        port=settings.metrics_port,
+        host=settings.metrics_host,
+        bearer_token=settings.metrics_bearer_token,
+    )
     atexit.register(_cleanup)
     transport = settings.transport
     logger.info("Asibot MCP server starting (transport=%s, data_dir=%s)", transport, settings.data_dir)
     if transport == "streamable-http":
-        logger.info("Listening on http://%s:%d/mcp", settings.host, settings.port)
+        if settings.port != 443 and not settings.allow_insecure_http:
+            logger.error(
+                "Refusing to start HTTP transport without TLS — API keys would be "
+                "transmitted in plaintext. Either: (1) use a TLS-terminating reverse "
+                "proxy on port 443, or (2) set ASIBOT_ALLOW_INSECURE_HTTP=true to override."
+            )
+            raise SystemExit(1)
+        scheme = "https" if settings.port == 443 else "http"
+        logger.info("Listening on %s://%s:%d/mcp", scheme, settings.host, settings.port)
         if settings.port != 443:
             logger.warning(
-                "Running HTTP transport without TLS. API keys are transmitted in plaintext. "
-                "Use a reverse proxy (nginx, Caddy) with TLS termination in production."
+                "Running HTTP without TLS (ASIBOT_ALLOW_INSECURE_HTTP=true). "
+                "Use a reverse proxy with TLS termination in production."
             )
+        if settings.dashboard_enabled:
+            _start_dashboard()
     mcp.run(transport=transport)
 
 

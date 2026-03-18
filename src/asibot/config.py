@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     transport: str = "stdio"  # "stdio" or "streamable-http"
     host: str = "0.0.0.0"
     port: int = 8080
+    allow_insecure_http: bool = False  # Must be True to run HTTP without TLS
+
+    # Dashboard
+    dashboard_host: str = "0.0.0.0"
+    dashboard_port: int = 8081
+    dashboard_enabled: bool = True
 
     # Microsoft SSO (delegated auth via device code flow — used by all MS365 connectors)
     ms365_tenant_id: str = ""
@@ -40,9 +46,37 @@ class Settings(BaseSettings):
     sap_base_url: str = ""  # e.g., "https://api.sap.mycompany.com"
     roboflow_workspace: str = ""  # e.g., "mycompany"
 
+    # Database
+    db_path: Path | None = None  # default: data_dir / "asibot.db"
+
+    # Connection pool
+    pool_max_connections: int = 20
+    pool_max_clients: int = 200
+
+    # Circuit breaker
+    circuit_failure_threshold: int = 5
+    circuit_recovery_timeout: float = 60.0
+
+    # Metrics
+    metrics_enabled: bool = True
+    metrics_host: str = "127.0.0.1"  # localhost-only by default; use reverse proxy to expose
+    metrics_port: int = 9090
+    metrics_bearer_token: str = ""  # optional Bearer token for metrics endpoint auth
+
+    # Sessions
+    session_ttl: int = 3600
+    session_cache_size: int = 1000
+
+    # Audit
+    audit_retention_days: int = 90
+
     @property
     def users_dir(self) -> Path:
         return self.data_dir / "users"
+
+    @property
+    def resolved_db_path(self) -> Path:
+        return self.db_path if self.db_path is not None else self.data_dir / "asibot.db"
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
