@@ -1,184 +1,15 @@
 # Asibot
 
-Enterprise connector agent exposed as an MCP server. Connects to 23+ SaaS platforms and lets you search, query, and manage data through Claude Desktop or any MCP client.
+Connect Claude to the tools your team already uses. Asibot is an MCP server that gives Claude access to 26 SaaS platforms — search files, read emails, query databases, create issues, and more, all from a single conversation.
 
-## Quick Start
+## Install
 
-```bash
-# Clone and install
-git clone <repo-url> && cd asibot
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+Choose the setup that matches how you use Claude.
 
-# Configure
-cp .env.example .env
-# Edit .env with your Microsoft 365 app registration (required for SSO)
+### Claude Desktop (Pro, Max, Team)
 
-# Run (stdio mode for Claude Desktop)
-asibot-stdio
+Add this to your `claude_desktop_config.json`:
 
-# Or run as HTTP server
-ASIBOT_TRANSPORT=streamable-http asibot
-```
-
-## Architecture
-
-```
-src/asibot/
-├── server.py          # MCP server entry point, 13 core tools
-├── stdio_server.py    # Claude Desktop stdio transport entry point
-├── config.py          # Settings via pydantic-settings (ASIBOT_ env prefix)
-├── auth.py            # User creation/lookup, API key store (encrypted)
-├── user_session.py    # Per-request auth, session cache (LRU), rate limiting
-├── token_store.py     # Per-user credential/preference storage, ClientSpec factory
-├── crypto.py          # Fernet encryption at rest, key rotation
-├── audit.py           # Append-only audit log with secret redaction (rotating)
-├── validation.py      # Input validation (IDs, queries, URLs, injection prevention)
-└── connectors/
-    ├── base.py        # Abstract Connector class
-    ├── registry.py    # Auto-discovery and registration
-    ├── microsoft.py   # Shared MS Graph auth (SSO device code flow)
-    └── ...            # 23 service connectors
-```
-
-**Data directory:** `~/.asibot/` — contains encrypted user profiles, per-user credentials, and audit logs.
-
-## Security
-
-- **Encryption at rest** — All credentials and tokens encrypted with Fernet (AES-128-CBC). Master key stored with `0600` permissions.
-- **Key rotation** — `crypto.rotate_key()` re-encrypts all user data with a new key and backs up the old one.
-- **Input validation** — All user-supplied parameters validated before reaching external APIs: ID format, query length, path traversal prevention, SOQL object allowlisting, URL scheme enforcement.
-- **Rate limiting** — Failed auth attempts rate-limited per key prefix (10 failures / 5 minutes).
-- **Session management** — LRU session cache with 1-hour TTL, 10k cap, and per-user invalidation on key rotation.
-- **Audit logging** — Append-only JSON log with automatic secret redaction and log rotation (10 MB, 5 backups).
-- **Per-user isolation** — Each user's credentials stored in separate encrypted files.
-- **Permission control** — Per-service enabled/disabled and read/readwrite modes.
-- **TLS warning** — Server warns when running HTTP transport without TLS.
-
-## Configuration
-
-All settings use the `ASIBOT_` env prefix. Copy `.env.example` to `.env`:
-
-### Server
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASIBOT_TRANSPORT` | `stdio` | `stdio` (Claude Desktop) or `streamable-http` (web) |
-| `ASIBOT_HOST` | `0.0.0.0` | HTTP server bind address |
-| `ASIBOT_PORT` | `8080` | HTTP server port |
-
-### SSO & OAuth (admin-configured)
-
-| Variable | Description |
-|----------|-------------|
-| `ASIBOT_MS365_TENANT_ID` | Azure AD tenant ID (required for Microsoft SSO) |
-| `ASIBOT_MS365_CLIENT_ID` | Azure AD app client ID (required for Microsoft SSO) |
-| `ASIBOT_SHAREPOINT_SITE_URL` | Default SharePoint site (e.g., `company.sharepoint.com`) |
-| `ASIBOT_GITHUB_CLIENT_ID` | GitHub OAuth App client ID (enables zero-input GitHub setup) |
-| `ASIBOT_GOOGLE_CLIENT_ID` | Google OAuth client ID (enables zero-input Google setup) |
-| `ASIBOT_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-
-### Business Defaults (admin sets once, users never see these)
-
-When configured, users only need to provide their personal token — org/domain/URL are injected automatically.
-
-| Variable | Description |
-|----------|-------------|
-| `ASIBOT_GITHUB_ORG` | GitHub organization name |
-| `ASIBOT_ATLASSIAN_DOMAIN` | Jira/Confluence domain (e.g., `company.atlassian.net`) |
-| `ASIBOT_ZENDESK_SUBDOMAIN` | Zendesk subdomain (e.g., `company`) |
-| `ASIBOT_SALESFORCE_INSTANCE_URL` | Salesforce instance URL (e.g., `https://company.my.salesforce.com`) |
-| `ASIBOT_SHAREFILE_SUBDOMAIN` | Citrix ShareFile subdomain |
-| `ASIBOT_SAP_BASE_URL` | SAP API base URL (HTTPS) |
-| `ASIBOT_ROBOFLOW_WORKSPACE` | Roboflow workspace name |
-
-## User Setup
-
-1. Start the server
-2. In Claude Desktop, call `asibot_setup` — this starts a Microsoft SSO device code flow
-3. Sign in via browser with the provided code
-4. Call `asibot_setup_status` to get your API key and Claude Desktop config snippet
-5. Add the config to `claude_desktop_config.json` and restart Claude Desktop
-
-For local dev with a single user, the API key header is optional — the server auto-resolves the only registered user.
-
-## MCP Tools
-
-### Setup & Identity
-- `asibot_setup` — One-time SSO account creation
-- `asibot_setup_status` — Get API key after SSO sign-in
-- `asibot_whoami` — Check current authenticated user
-- `asibot_rotate_key` — Generate a new API key (invalidates old one)
-
-### Credential Management
-- `asibot_connect <service>` — Get instructions to connect a service
-- `asibot_set_credentials <service> <json>` — Store service credentials
-- `asibot_disconnect <service>` — Remove service credentials
-- `asibot_services` — List all services with connection status
-
-### Permission Control
-- `asibot_enable <service>` — Enable a connector
-- `asibot_disable <service>` — Disable a connector
-- `asibot_set_mode <service> <read|readwrite>` — Set access level
-
-## Connectors
-
-Each connector is auto-discovered at startup. Users connect services individually via `asibot_connect`.
-
-| Connector | Auth | User Provides |
-|-----------|------|---------------|
-| **SharePoint** | Microsoft SSO | Nothing (browser sign-in) |
-| **Outlook** | Microsoft SSO | Nothing (browser sign-in) |
-| **Teams** | Microsoft SSO | Nothing (browser sign-in) |
-| **Calendar** | Microsoft SSO | Nothing (browser sign-in) |
-| **GitHub** | OAuth device flow | Nothing (browser sign-in) |
-| **Google Workspace** | OAuth device flow | Nothing (browser sign-in) |
-| **Jira** | API Token | Token only (email + domain auto-filled) |
-| **Confluence** | API Token | Token only (email + domain auto-filled) |
-| **Salesforce** | OAuth Token | Token only (instance URL auto-filled) |
-| **Zendesk** | API Token | Token only (email + subdomain auto-filled) |
-| **Notion** | Integration Token | Token |
-| **HubSpot** | Private App Token | Token |
-| **Figma** | Personal Access Token | Token |
-| **Smartsheet** | Bearer Token | Token |
-| **Adobe Sign** | OAuth Token | Token |
-| **RingCentral** | OAuth Token | Token |
-| **SAP Concur** | OAuth Token | Token |
-| **LinkSquares** | Bearer Token | Token |
-| **Zapier NLA** | API Key | API key |
-| **Roboflow** | API Key | API key only (workspace auto-filled) |
-| **SAP** | Bearer Token | Token only (base URL auto-filled) |
-| **Citrix ShareFile** | OAuth Token | Token only (subdomain auto-filled) |
-| **Zoom** | Server-to-Server OAuth | Account ID, client ID, client secret |
-| **Paylocity** | Client Credentials | Client ID, client secret, company ID |
-
-### Adding a New Connector
-
-1. Create `src/asibot/connectors/yourservice.py`
-2. Subclass `Connector` and implement `connect()`, `disconnect()`, `fetch_documents()`, `register_tools()`
-3. Add credential schema to `SERVICE_SCHEMAS` and a `ClientSpec` to `CLIENT_SPECS` in `token_store.py`
-4. Use `token_store.safe_request()` for all API calls (standardized error handling)
-5. The connector is auto-discovered at startup — no registration code needed
-
-## Development
-
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Lint
-ruff check src/
-
-# Run with hot reload (HTTP mode)
-ASIBOT_TRANSPORT=streamable-http python -m asibot.server
-```
-
-## Claude Desktop Config
-
-For **stdio** mode (local, direct):
 ```json
 {
   "mcpServers": {
@@ -189,7 +20,28 @@ For **stdio** mode (local, direct):
 }
 ```
 
-For **HTTP** mode (remote server):
+Then restart Claude Desktop and say:
+
+> **Set up Asibot and connect me to [service name].**
+
+Claude will walk you through the rest.
+
+### Claude Code (CLI)
+
+Run:
+
+```
+claude mcp add asibot asibot-stdio
+```
+
+Then ask Claude:
+
+> **Set up Asibot and connect me to [service name].**
+
+### Remote Server (Enterprise)
+
+If your admin has deployed Asibot as a shared server, add this to your `claude_desktop_config.json`:
+
 ```json
 {
   "mcpServers": {
@@ -205,3 +57,214 @@ For **HTTP** mode (remote server):
   }
 }
 ```
+
+Ask your admin for the server URL and API key, or say:
+
+> **Set up my Asibot account.**
+
+Claude will guide you through sign-in.
+
+---
+
+## Connectors
+
+### Microsoft 365
+
+Sign in once with your Microsoft account to unlock SharePoint, Outlook, Teams, and Calendar.
+
+**SharePoint**
+- Search files and documents across your sites
+- Browse folder contents
+- Read files (Word, PDF, Excel, CSV, text, Markdown)
+- List and search SharePoint sites
+
+**Outlook**
+- Search your email
+- Read full email threads
+- Send emails
+- Browse recent messages by folder
+
+**Teams**
+- List your teams and channels
+- Read channel conversations
+- Search across all messages
+- View recent chats
+
+**Calendar**
+- View upcoming meetings and events
+
+---
+
+### Google Workspace
+
+Sign in with your Google account to connect Drive and Calendar.
+
+**Google Drive**
+- Search across all your files
+- Browse folder contents
+- Read documents (Docs, Sheets, text, PDF)
+
+**Google Calendar**
+- View upcoming events
+
+---
+
+### GitHub
+
+Sign in with your GitHub account.
+
+- Search repositories and code
+- List repos in your organization
+- Browse issues and pull requests
+- Read issue details and comments
+- Create new issues
+
+---
+
+### Jira
+
+- Search issues with JQL or plain text
+- View issue details with full comment history
+- List projects
+- See your assigned issues
+- Create new issues
+- Add comments to existing issues
+
+---
+
+### Confluence
+
+- Search pages across all spaces
+- Read full page content
+- List all spaces
+
+---
+
+### Salesforce
+
+- Search records across objects
+- Run SOQL queries
+- Get full record details by type and ID
+
+---
+
+### HubSpot
+
+- Search contacts and deals
+- View detailed contact profiles
+- View detailed deal records
+
+---
+
+### Zendesk
+
+- Search support tickets
+- Read ticket details with full comment threads
+- Search Help Center articles
+
+---
+
+### Notion
+
+- Search across pages and databases
+- Read full page content
+- List all databases
+- Query and filter database entries
+
+---
+
+### Figma
+
+- List team projects and files
+- View file structure and metadata
+- Read file comments
+
+---
+
+### Smartsheet
+
+- List all accessible sheets
+- Read sheet data with rows and columns
+- Search across sheets
+
+---
+
+### Zoom
+
+- List upcoming meetings
+- View meeting details
+- Browse cloud recordings
+
+---
+
+### Adobe Sign
+
+- List agreements
+- View agreement details and status
+
+---
+
+### SAP
+
+- List and search sales orders
+- View order details
+
+---
+
+### SAP Concur
+
+- List expense reports
+- View report details with line items
+
+---
+
+### Citrix ShareFile
+
+- Browse files and folders
+- Search for documents
+
+---
+
+### LinkSquares
+
+- List contracts
+- Search across contract data
+
+---
+
+### Paylocity
+
+- List employees
+- View employee details
+
+---
+
+### RingCentral
+
+- View call log
+- Browse recent messages
+
+---
+
+### Roboflow
+
+- List workspace projects
+- View project details
+
+---
+
+### Zapier
+
+- List your configured Zapier actions
+- Run any Zapier action using natural language
+
+---
+
+## Managing Connections
+
+Once Asibot is installed, you can manage everything through conversation:
+
+- **"Connect me to Jira"** — Claude will walk you through authentication
+- **"What services am I connected to?"** — see all your active connections
+- **"Disconnect Salesforce"** — remove stored credentials for a service
+- **"Set GitHub to read-only"** — control access levels per service
