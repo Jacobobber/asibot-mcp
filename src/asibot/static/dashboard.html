@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Asibot Analytics</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'] },
+        }
+      }
+    }
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    /* Smooth tab transitions */
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    /* Subtle card hover */
+    .card { transition: box-shadow 0.2s ease, transform 0.15s ease; }
+    .card:hover { box-shadow: 0 4px 24px rgba(0,0,0,0.08); transform: translateY(-1px); }
+    .dark .card:hover { box-shadow: 0 4px 24px rgba(0,0,0,0.3); }
+    /* Period button active state */
+    .period-btn.active { background-color: #3b82f6; color: #fff; }
+    .dark .period-btn.active { background-color: #2563eb; }
+    /* Scrollbar styling */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 3px; }
+    .dark ::-webkit-scrollbar-thumb { background: #475569; }
+    /* Loading spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 0.8s linear infinite; }
+  </style>
+</head>
+<body class="h-full bg-slate-50 text-slate-700 dark:bg-slate-900 dark:text-slate-100 font-sans antialiased">
+
+  <!-- Top Nav -->
+  <nav class="fixed top-0 inset-x-0 z-50 h-14 bg-white/80 dark:bg-slate-800/80 backdrop-blur border-b border-slate-200 dark:border-slate-700 flex items-center justify-between px-4 md:px-6">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center">
+        <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+        </svg>
+      </div>
+      <h1 class="text-lg font-semibold tracking-tight">Asibot Analytics</h1>
+    </div>
+
+    <div class="flex items-center gap-3">
+      <!-- Period selector -->
+      <div class="hidden sm:flex items-center bg-slate-100 dark:bg-slate-700 rounded-lg p-0.5">
+        <button onclick="setPeriod(7)"  class="period-btn px-3 py-1 text-xs font-medium rounded-md transition-colors" data-days="7">7d</button>
+        <button onclick="setPeriod(30)" class="period-btn px-3 py-1 text-xs font-medium rounded-md transition-colors active" data-days="30">30d</button>
+        <button onclick="setPeriod(90)" class="period-btn px-3 py-1 text-xs font-medium rounded-md transition-colors" data-days="90">90d</button>
+      </div>
+
+      <!-- Dark mode toggle -->
+      <button onclick="toggleDark()" id="darkToggle" class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" title="Toggle dark mode">
+        <svg id="sunIcon" class="w-5 h-5 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+        </svg>
+        <svg id="moonIcon" class="w-5 h-5 block dark:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+        </svg>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Tab Navigation -->
+  <div class="fixed top-14 inset-x-0 z-40 bg-white/80 dark:bg-slate-800/80 backdrop-blur border-b border-slate-200 dark:border-slate-700">
+    <div class="flex px-4 md:px-6 gap-1 overflow-x-auto">
+      <button onclick="switchTab('executive')"  class="tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap" data-tab="executive">Executive</button>
+      <button onclick="switchTab('usage')"      class="tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap" data-tab="usage">Usage</button>
+      <button onclick="switchTab('users')"      class="tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap" data-tab="users">Users</button>
+      <button onclick="switchTab('operations')" class="tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap" data-tab="operations">Operations</button>
+    </div>
+  </div>
+
+  <!-- Mobile period selector -->
+  <div class="sm:hidden fixed top-[6.5rem] inset-x-0 z-30 bg-white/80 dark:bg-slate-800/80 backdrop-blur border-b border-slate-200 dark:border-slate-700 px-4 py-2">
+    <div class="flex items-center bg-slate-100 dark:bg-slate-700 rounded-lg p-0.5 w-fit">
+      <button onclick="setPeriod(7)"  class="period-btn px-3 py-1 text-xs font-medium rounded-md transition-colors" data-days="7">7d</button>
+      <button onclick="setPeriod(30)" class="period-btn px-3 py-1 text-xs font-medium rounded-md transition-colors active" data-days="30">30d</button>
+      <button onclick="setPeriod(90)" class="period-btn px-3 py-1 text-xs font-medium rounded-md transition-colors" data-days="90">90d</button>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <main class="pt-[6.75rem] sm:pt-[6.75rem] pb-8 px-4 md:px-6 max-w-7xl mx-auto">
+
+    <!-- Loading overlay -->
+    <div id="loading" class="flex items-center justify-center py-20">
+      <div class="flex flex-col items-center gap-3">
+        <svg class="spinner w-8 h-8 text-blue-500" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <p class="text-sm text-slate-400">Loading analytics...</p>
+      </div>
+    </div>
+
+    <!-- Error banner -->
+    <div id="errorBanner" class="hidden mb-4 p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+      <p class="text-sm text-red-600 dark:text-red-400" id="errorText"></p>
+    </div>
+
+    <!-- ==================== EXECUTIVE TAB ==================== -->
+    <div id="tab-executive" class="tab-content">
+      <!-- KPI Cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Total Tool Calls</p>
+          <p class="text-3xl font-bold text-slate-900 dark:text-white" id="kpi-calls">--</p>
+          <p class="text-xs text-slate-400 mt-1">calls</p>
+        </div>
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Active Users</p>
+          <p class="text-3xl font-bold text-blue-500" id="kpi-users">--</p>
+          <p class="text-xs text-slate-400 mt-1">users</p>
+        </div>
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Connected Services</p>
+          <p class="text-3xl font-bold text-emerald-500" id="kpi-services">--</p>
+          <p class="text-xs text-slate-400 mt-1">services</p>
+        </div>
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Time Saved</p>
+          <p class="text-3xl font-bold text-amber-500" id="kpi-time">--</p>
+          <p class="text-xs text-slate-400 mt-1" id="kpi-time-sub"></p>
+        </div>
+      </div>
+
+      <!-- Charts row -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <!-- Adoption Trend -->
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <h3 class="text-sm font-semibold mb-4">Adoption Trend</h3>
+          <div class="relative h-64">
+            <canvas id="chart-adoption"></canvas>
+          </div>
+        </div>
+        <!-- Service Popularity -->
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <h3 class="text-sm font-semibold mb-4">Service Popularity</h3>
+          <div class="relative h-64 flex items-center justify-center">
+            <canvas id="chart-services-donut"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lifecycle Events -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">New Users</p>
+          <p class="text-2xl font-bold" id="lifecycle-users">--</p>
+        </div>
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Service Connections</p>
+          <p class="text-2xl font-bold" id="lifecycle-connections">--</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== USAGE TAB ==================== -->
+    <div id="tab-usage" class="tab-content">
+      <!-- Daily Usage -->
+      <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700 mb-4">
+        <h3 class="text-sm font-semibold mb-4">Daily Usage</h3>
+        <div class="relative h-72">
+          <canvas id="chart-daily"></canvas>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <!-- Usage by Service -->
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <h3 class="text-sm font-semibold mb-4">Usage by Service</h3>
+          <div class="relative h-64">
+            <canvas id="chart-service-bar"></canvas>
+          </div>
+        </div>
+        <!-- Activity by Hour -->
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <h3 class="text-sm font-semibold mb-4">Activity by Hour (UTC)</h3>
+          <div class="relative h-64">
+            <canvas id="chart-hourly"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Tools Table -->
+      <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+        <h3 class="text-sm font-semibold mb-4">Top Tools</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-slate-200 dark:border-slate-700">
+                <th class="text-left py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">#</th>
+                <th class="text-left py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">Tool</th>
+                <th class="text-right py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">Calls</th>
+                <th class="text-right py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">% of Total</th>
+              </tr>
+            </thead>
+            <tbody id="tools-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== USERS TAB ==================== -->
+    <div id="tab-users" class="tab-content">
+      <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+        <h3 class="text-sm font-semibold mb-4">User Activity</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm" id="users-table">
+            <thead>
+              <tr class="border-b border-slate-200 dark:border-slate-700">
+                <th class="text-left py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider cursor-pointer hover:text-slate-600 dark:hover:text-slate-300" onclick="sortUsers('user')">User</th>
+                <th class="text-right py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider cursor-pointer hover:text-slate-600 dark:hover:text-slate-300" onclick="sortUsers('calls')">Total Calls</th>
+                <th class="text-right py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider cursor-pointer hover:text-slate-600 dark:hover:text-slate-300" onclick="sortUsers('services_used')">Services</th>
+                <th class="text-left py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider cursor-pointer hover:text-slate-600 dark:hover:text-slate-300" onclick="sortUsers('last_active')">Last Active</th>
+                <th class="text-left py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">Top Tool</th>
+              </tr>
+            </thead>
+            <tbody id="users-table-body"></tbody>
+          </table>
+        </div>
+        <p class="text-xs text-slate-400 mt-3" id="users-count"></p>
+      </div>
+    </div>
+
+    <!-- ==================== OPERATIONS TAB ==================== -->
+    <div id="tab-operations" class="tab-content">
+      <!-- KPI Cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Error Rate</p>
+          <p class="text-3xl font-bold" id="ops-error-rate">--</p>
+        </div>
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Error Count</p>
+          <p class="text-3xl font-bold text-red-500" id="ops-error-count">--</p>
+        </div>
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">Avg Latency</p>
+          <p class="text-3xl font-bold" id="ops-avg-latency">--</p>
+          <p class="text-xs text-slate-400 mt-1">ms</p>
+        </div>
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-1">P95 Latency</p>
+          <p class="text-3xl font-bold" id="ops-p95-latency">--</p>
+          <p class="text-xs text-slate-400 mt-1">ms</p>
+        </div>
+      </div>
+
+      <!-- Error charts -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <h3 class="text-sm font-semibold mb-4">Errors by Service</h3>
+          <div class="relative h-64">
+            <canvas id="chart-errors-service"></canvas>
+          </div>
+        </div>
+        <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+          <h3 class="text-sm font-semibold mb-4">Errors by Type</h3>
+          <div class="relative h-64">
+            <canvas id="chart-errors-type"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Service Health Table -->
+      <div class="card bg-white dark:bg-slate-800 rounded-xl p-5 border border-slate-200 dark:border-slate-700">
+        <h3 class="text-sm font-semibold mb-4">Service Health</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-slate-200 dark:border-slate-700">
+                <th class="text-left py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">Service</th>
+                <th class="text-right py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">Calls</th>
+                <th class="text-right py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">Errors</th>
+                <th class="text-right py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">Error Rate</th>
+                <th class="text-right py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">Avg Latency</th>
+                <th class="text-right py-2 px-3 font-medium text-slate-400 text-xs uppercase tracking-wider">P95 Latency</th>
+              </tr>
+            </thead>
+            <tbody id="health-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="text-center text-xs text-slate-400 dark:text-slate-600 py-4 border-t border-slate-200 dark:border-slate-700">
+    Asibot Analytics Dashboard &middot; Auto-refreshes every 5 minutes
+  </footer>
+
+<script>
+// ========== State ==========
+let currentTab = 'executive';
+let currentDays = 30;
+let data = {};
+let charts = {};
+let userSortCol = 'calls';
+let userSortAsc = false;
+
+const COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#f97316'];
+
+// ========== Helpers ==========
+function getToken() {
+  return new URLSearchParams(window.location.search).get('token') || '';
+}
+
+function fetchOpts() {
+  const t = getToken();
+  return t ? { headers: { 'Authorization': 'Bearer ' + t } } : {};
+}
+
+function fmt(n) {
+  if (n == null) return '--';
+  return n.toLocaleString();
+}
+
+function pct(n) {
+  if (n == null) return '--';
+  return (n * 100).toFixed(1) + '%';
+}
+
+function formatUser(uid) {
+  return (uid || '').replace(/_at_/g, '@');
+}
+
+function isDark() {
+  return document.documentElement.classList.contains('dark');
+}
+
+function chartTextColor() {
+  return isDark() ? '#94a3b8' : '#64748b';
+}
+
+function chartGridColor() {
+  return isDark() ? 'rgba(148,163,184,0.1)' : 'rgba(100,116,139,0.1)';
+}
+
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+function errorRateColor(rate) {
+  if (rate < 0.02) return 'text-emerald-500';
+  if (rate < 0.05) return 'text-amber-500';
+  return 'text-red-500';
+}
+
+function errorRateBg(rate) {
+  if (rate < 0.02) return 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400';
+  if (rate < 0.05) return 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400';
+  return 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400';
+}
+
+// ========== Dark Mode ==========
+function toggleDark() {
+  document.documentElement.classList.toggle('dark');
+  localStorage.setItem('asibot-dark', isDark() ? '1' : '0');
+  renderCurrentTab();
+}
+
+(function initDark() {
+  const pref = localStorage.getItem('asibot-dark');
+  if (pref === '1' || (pref == null && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+    document.documentElement.classList.add('dark');
+  }
+})();
+
+// ========== Tabs ==========
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    const isActive = btn.dataset.tab === tab;
+    btn.classList.toggle('border-blue-500', isActive);
+    btn.classList.toggle('text-blue-500', isActive);
+    btn.classList.toggle('border-transparent', !isActive);
+    btn.classList.toggle('text-slate-500', !isActive);
+    btn.classList.toggle('dark:text-slate-400', !isActive);
+  });
+  renderCurrentTab();
+}
+
+// ========== Period ==========
+function setPeriod(days) {
+  currentDays = days;
+  document.querySelectorAll('.period-btn').forEach(btn => {
+    btn.classList.toggle('active', parseInt(btn.dataset.days) === days);
+  });
+  fetchData();
+}
+
+// ========== Data Fetching ==========
+async function fetchData() {
+  const opts = fetchOpts();
+  const loading = document.getElementById('loading');
+  const errorBanner = document.getElementById('errorBanner');
+  errorBanner.classList.add('hidden');
+
+  try {
+    const [summary, usage, services, users, errors] = await Promise.all([
+      fetch('/api/summary?days=' + currentDays, opts).then(r => { if (!r.ok) throw new Error(r.status + ' ' + r.statusText); return r.json(); }),
+      fetch('/api/usage?days=' + currentDays, opts).then(r => { if (!r.ok) throw new Error(r.status + ' ' + r.statusText); return r.json(); }),
+      fetch('/api/services?days=' + currentDays, opts).then(r => { if (!r.ok) throw new Error(r.status + ' ' + r.statusText); return r.json(); }),
+      fetch('/api/users?days=' + currentDays, opts).then(r => { if (!r.ok) throw new Error(r.status + ' ' + r.statusText); return r.json(); }),
+      fetch('/api/errors?days=' + currentDays, opts).then(r => { if (!r.ok) throw new Error(r.status + ' ' + r.statusText); return r.json(); }),
+    ]);
+    data = { summary, usage, services, users, errors };
+    loading.classList.add('hidden');
+    renderCurrentTab();
+  } catch (err) {
+    loading.classList.add('hidden');
+    errorBanner.classList.remove('hidden');
+    document.getElementById('errorText').textContent = 'Failed to load data: ' + err.message;
+  }
+}
+
+// ========== Rendering ==========
+function renderCurrentTab() {
+  if (!data.summary) return;
+  switch (currentTab) {
+    case 'executive': renderExecutive(); break;
+    case 'usage': renderUsage(); break;
+    case 'users': renderUsers(); break;
+    case 'operations': renderOperations(); break;
+  }
+}
+
+// ---------- Executive ----------
+function renderExecutive() {
+  const s = data.summary;
+  document.getElementById('kpi-calls').textContent = fmt(s.total_calls);
+  document.getElementById('kpi-users').textContent = fmt(s.unique_users);
+  document.getElementById('kpi-services').textContent = fmt(s.active_services);
+
+  const hours = Math.floor((s.time_saved_minutes || 0) / 60);
+  const mins = Math.round((s.time_saved_minutes || 0) % 60);
+  if (hours > 0) {
+    document.getElementById('kpi-time').textContent = hours + 'h ' + mins + 'm';
+    document.getElementById('kpi-time-sub').textContent = fmt(s.time_saved_minutes) + ' minutes total';
+  } else {
+    document.getElementById('kpi-time').textContent = mins + ' min';
+    document.getElementById('kpi-time-sub').textContent = '';
+  }
+
+  // Lifecycle
+  const lc = s.lifecycle || {};
+  document.getElementById('lifecycle-users').textContent = fmt(lc.user_created || 0);
+  document.getElementById('lifecycle-connections').textContent = fmt(lc.service_connected || 0);
+
+  // Adoption Trend chart
+  const adoption = (data.usage && data.usage.calls_by_day) || [];
+  renderAdoptionChart(adoption);
+
+  // Service Popularity doughnut
+  renderServiceDoughnut(data.usage ? data.usage.calls_by_service : {});
+}
+
+function renderAdoptionChart(callsByDay) {
+  destroyChart('adoption');
+  const ctx = document.getElementById('chart-adoption').getContext('2d');
+  const labels = callsByDay.map(d => d.date);
+  const counts = callsByDay.map(d => d.count);
+  // Compute cumulative
+  let cum = 0;
+  const cumulative = counts.map(c => { cum += c; return cum; });
+
+  charts['adoption'] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Cumulative Calls',
+          data: cumulative,
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59,130,246,0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 0,
+          yAxisID: 'y',
+        },
+        {
+          label: 'Daily Calls',
+          data: counts,
+          borderColor: '#10b981',
+          backgroundColor: 'rgba(16,185,129,0.1)',
+          fill: false,
+          tension: 0.3,
+          pointRadius: 0,
+          yAxisID: 'y1',
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: { legend: { labels: { color: chartTextColor(), font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { color: chartTextColor(), maxTicksLimit: 8, font: { size: 10 } }, grid: { color: chartGridColor() } },
+        y: { position: 'left', ticks: { color: chartTextColor(), font: { size: 10 } }, grid: { color: chartGridColor() }, title: { display: true, text: 'Cumulative', color: chartTextColor(), font: { size: 10 } } },
+        y1: { position: 'right', ticks: { color: chartTextColor(), font: { size: 10 } }, grid: { drawOnChartArea: false }, title: { display: true, text: 'Daily', color: chartTextColor(), font: { size: 10 } } },
+      }
+    }
+  });
+}
+
+function renderServiceDoughnut(callsByService) {
+  destroyChart('services-donut');
+  const ctx = document.getElementById('chart-services-donut').getContext('2d');
+  let entries = Object.entries(callsByService || {}).sort((a, b) => b[1] - a[1]);
+
+  // Group beyond top 8 as "Other"
+  let labels = [], values = [];
+  if (entries.length > 8) {
+    const top = entries.slice(0, 8);
+    const rest = entries.slice(8).reduce((s, e) => s + e[1], 0);
+    labels = top.map(e => e[0]).concat('Other');
+    values = top.map(e => e[1]).concat(rest);
+  } else {
+    labels = entries.map(e => e[0]);
+    values = entries.map(e => e[1]);
+  }
+
+  charts['services-donut'] = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: COLORS.slice(0, labels.length).concat(labels.length > 8 ? ['#94a3b8'] : []),
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '60%',
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: { color: chartTextColor(), font: { size: 11 }, padding: 12, usePointStyle: true, pointStyle: 'circle' }
+        }
+      }
+    }
+  });
+}
+
+// ---------- Usage ----------
+function renderUsage() {
+  const u = data.usage;
+  if (!u) return;
+
+  // Daily Usage with 7-day MA
+  renderDailyChart(u.calls_by_day || []);
+  renderServiceBarChart(u.calls_by_service || {});
+  renderHourlyChart(u.calls_by_hour || []);
+  renderToolsTable(u.top_tools || []);
+}
+
+function renderDailyChart(callsByDay) {
+  destroyChart('daily');
+  const ctx = document.getElementById('chart-daily').getContext('2d');
+  const labels = callsByDay.map(d => d.date);
+  const counts = callsByDay.map(d => d.count);
+
+  // 7-day moving average
+  const ma = counts.map((_, i) => {
+    const start = Math.max(0, i - 6);
+    const window = counts.slice(start, i + 1);
+    return Math.round(window.reduce((a, b) => a + b, 0) / window.length);
+  });
+
+  charts['daily'] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Daily Calls',
+          data: counts,
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59,130,246,0.08)',
+          fill: true,
+          tension: 0.2,
+          pointRadius: 0,
+          borderWidth: 1.5,
+        },
+        {
+          label: '7-day Average',
+          data: ma,
+          borderColor: '#f59e0b',
+          borderDash: [6, 3],
+          fill: false,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: { legend: { labels: { color: chartTextColor(), font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { color: chartTextColor(), maxTicksLimit: 10, font: { size: 10 } }, grid: { color: chartGridColor() } },
+        y: { beginAtZero: true, ticks: { color: chartTextColor(), font: { size: 10 } }, grid: { color: chartGridColor() } },
+      }
+    }
+  });
+}
+
+function renderServiceBarChart(callsByService) {
+  destroyChart('service-bar');
+  const ctx = document.getElementById('chart-service-bar').getContext('2d');
+  const entries = Object.entries(callsByService || {}).sort((a, b) => b[1] - a[1]);
+  const labels = entries.map(e => e[0]);
+  const values = entries.map(e => e[1]);
+
+  charts['service-bar'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: labels.map((_, i) => COLORS[i % COLORS.length]),
+        borderRadius: 4,
+        barPercentage: 0.7,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: 'y',
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { beginAtZero: true, ticks: { color: chartTextColor(), font: { size: 10 } }, grid: { color: chartGridColor() } },
+        y: { ticks: { color: chartTextColor(), font: { size: 11 } }, grid: { display: false } },
+      }
+    }
+  });
+}
+
+function renderHourlyChart(callsByHour) {
+  destroyChart('hourly');
+  const ctx = document.getElementById('chart-hourly').getContext('2d');
+  const labels = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0') + ':00');
+
+  charts['hourly'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: callsByHour,
+        backgroundColor: '#3b82f6',
+        borderRadius: 3,
+        barPercentage: 0.8,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: chartTextColor(), font: { size: 9 }, maxRotation: 45 }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: chartTextColor(), font: { size: 10 } }, grid: { color: chartGridColor() } },
+      }
+    }
+  });
+}
+
+function renderToolsTable(topTools) {
+  const body = document.getElementById('tools-table-body');
+  const total = topTools.reduce((s, t) => s + (t.count || 0), 0) || 1;
+  body.innerHTML = topTools.slice(0, 20).map((t, i) => {
+    const p = ((t.count || 0) / total * 100).toFixed(1);
+    return '<tr class="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-800/50">'
+      + '<td class="py-2 px-3 text-slate-400">' + (i + 1) + '</td>'
+      + '<td class="py-2 px-3 font-mono text-xs">' + (t.tool || t.name || '') + '</td>'
+      + '<td class="py-2 px-3 text-right font-medium">' + fmt(t.count) + '</td>'
+      + '<td class="py-2 px-3 text-right text-slate-400">' + p + '%</td>'
+      + '</tr>';
+  }).join('');
+}
+
+// ---------- Users ----------
+function renderUsers() {
+  const u = data.users;
+  if (!u || !u.users) return;
+
+  let rows = [...u.users];
+
+  // Sort
+  rows.sort((a, b) => {
+    let va = a[userSortCol], vb = b[userSortCol];
+    if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
+    if (va < vb) return userSortAsc ? -1 : 1;
+    if (va > vb) return userSortAsc ? 1 : -1;
+    return 0;
+  });
+
+  const body = document.getElementById('users-table-body');
+  body.innerHTML = rows.map(u => {
+    return '<tr class="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-800/50">'
+      + '<td class="py-2 px-3">' + formatUser(u.user) + '</td>'
+      + '<td class="py-2 px-3 text-right font-medium">' + fmt(u.calls) + '</td>'
+      + '<td class="py-2 px-3 text-right">' + (u.services_used || '--') + '</td>'
+      + '<td class="py-2 px-3 text-slate-400">' + (u.last_active || '--') + '</td>'
+      + '<td class="py-2 px-3 font-mono text-xs">' + (u.top_tool || '--') + '</td>'
+      + '</tr>';
+  }).join('');
+
+  document.getElementById('users-count').textContent = rows.length + ' user' + (rows.length !== 1 ? 's' : '');
+}
+
+function sortUsers(col) {
+  if (userSortCol === col) {
+    userSortAsc = !userSortAsc;
+  } else {
+    userSortCol = col;
+    userSortAsc = col === 'user';
+  }
+  renderUsers();
+}
+
+// ---------- Operations ----------
+function renderOperations() {
+  const e = data.errors;
+  const svcs = data.services;
+  if (!e) return;
+
+  const s = data.summary || {};
+
+  // KPI cards
+  const rateEl = document.getElementById('ops-error-rate');
+  rateEl.textContent = pct(e.error_rate);
+  rateEl.className = 'text-3xl font-bold ' + errorRateColor(e.error_rate || 0);
+
+  document.getElementById('ops-error-count').textContent = fmt(e.error_count);
+  document.getElementById('ops-avg-latency').textContent = fmt(s.avg_latency_ms);
+  document.getElementById('ops-p95-latency').textContent = fmt(s.p95_latency_ms);
+
+  // Errors by Service bar
+  renderErrorsBarChart('errors-service', e.errors_by_service || {});
+  renderErrorsBarChart('errors-type', e.errors_by_type || {});
+
+  // Service Health table
+  renderHealthTable(svcs ? svcs.services : []);
+}
+
+function renderErrorsBarChart(id, obj) {
+  destroyChart(id);
+  const ctx = document.getElementById('chart-' + id).getContext('2d');
+  const entries = Object.entries(obj).sort((a, b) => b[1] - a[1]);
+
+  charts[id] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: entries.map(e => e[0]),
+      datasets: [{
+        data: entries.map(e => e[1]),
+        backgroundColor: '#ef4444',
+        borderRadius: 4,
+        barPercentage: 0.7,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: 'y',
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { beginAtZero: true, ticks: { color: chartTextColor(), font: { size: 10 } }, grid: { color: chartGridColor() } },
+        y: { ticks: { color: chartTextColor(), font: { size: 11 } }, grid: { display: false } },
+      }
+    }
+  });
+}
+
+function renderHealthTable(services) {
+  const body = document.getElementById('health-table-body');
+  if (!services || !services.length) {
+    body.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-slate-400">No service data</td></tr>';
+    return;
+  }
+  body.innerHTML = services.map(s => {
+    const rateCls = errorRateBg(s.error_rate || 0);
+    return '<tr class="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-800/50">'
+      + '<td class="py-2 px-3 font-medium">' + s.name + '</td>'
+      + '<td class="py-2 px-3 text-right">' + fmt(s.calls) + '</td>'
+      + '<td class="py-2 px-3 text-right">' + fmt(s.errors) + '</td>'
+      + '<td class="py-2 px-3 text-right"><span class="inline-block px-2 py-0.5 rounded text-xs font-medium ' + rateCls + '">' + pct(s.error_rate) + '</span></td>'
+      + '<td class="py-2 px-3 text-right">' + fmt(s.avg_latency_ms) + ' ms</td>'
+      + '<td class="py-2 px-3 text-right">' + fmt(s.p95_latency_ms) + ' ms</td>'
+      + '</tr>';
+  }).join('');
+}
+
+// ========== Init ==========
+switchTab('executive');
+fetchData();
+setInterval(fetchData, 300000); // 5 min auto-refresh
+</script>
+</body>
+</html>

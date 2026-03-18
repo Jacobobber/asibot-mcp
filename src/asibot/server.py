@@ -187,7 +187,7 @@ def _install_tool_tracking() -> None:
         user_id = "anonymous"
         if context is not None:
             try:
-                uid, _ = await user_session.require_user(context)
+                uid, _ = user_session.require_user(context)
                 if uid:
                     user_id = uid
             except Exception:
@@ -255,15 +255,12 @@ def _install_session_tracking() -> None:
         ctx = mcp.get_context()
         user_id = "anonymous"
         try:
-            uid, _ = await user_session.require_user(ctx)
+            uid, _ = user_session.require_user(ctx)
             if uid:
                 user_id = uid
         except Exception:
             pass
 
-        audit.log_event(user_id, "session_start", metadata={
-            "tools_available": len(result),
-        })
         try:
             await db.log_event(user_id, "session_start", metadata={
                 "tools_available": len(result),
@@ -296,7 +293,7 @@ async def asibot_setup(ctx: Context) -> str:
     if rate_err:
         return rate_err
     # Check if already authenticated
-    user_id, _ = await user_session.require_user(ctx)
+    user_id, _ = user_session.require_user(ctx)
     if user_id:
         user = await auth.get_user_by_email(user_id)
         if user:
@@ -612,7 +609,6 @@ async def _complete_setup(
         email = profile.get("mail") or profile.get("userPrincipalName", "unknown")
         name = profile.get("displayName", email)
         user = await auth.create_user(email, name)
-        audit.log_event(email, "user_created")
         try:
             await db.log_event(email, "user_created")
         except Exception:
@@ -769,7 +765,6 @@ async def _complete_device_code_oauth(
     async def on_success(data: dict) -> dict:
         creds = provider["extract_creds"](data)
         token_store.set_credentials(user_id, service, creds)
-        audit.log_event(user_id, "service_connected", service=service)
         try:
             await db.log_event(user_id, "service_connected", service=service)
         except Exception:
@@ -854,7 +849,7 @@ async def asibot_setup_status(setup_id: str = "") -> str:
 @concurrency_limited()
 async def asibot_whoami(ctx: Context) -> str:
     """Check which user you're authenticated as."""
-    user_id, err = await user_session.require_user(ctx)
+    user_id, err = user_session.require_user(ctx)
     if err:
         return err
     user = await auth.get_user_by_email(user_id)
@@ -870,14 +865,13 @@ async def asibot_rotate_key(ctx: Context) -> str:
 
     After rotation, update your Claude Desktop config with the new key.
     """
-    user_id, err = await user_session.require_user(ctx)
+    user_id, err = user_session.require_user(ctx)
     if err:
         return err
     user = await auth.rotate_key(user_id)
     if not user:
         return "Could not rotate key — user not found."
     user_session.invalidate_user_sessions(user_id)
-    audit.log_event(user_id, "key_rotated")
     try:
         await db.log_event(user_id, "key_rotated")
     except Exception:
@@ -899,7 +893,7 @@ async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
     Args:
         service: Service name (e.g., "github", "atlassian", "notion", "zendesk", "figma", etc.)
     """
-    user_id, err = await user_session.require_user(ctx)
+    user_id, err = user_session.require_user(ctx)
     if err:
         return err
 
@@ -953,7 +947,7 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
         service: Service name (e.g., "github", "atlassian")
         credentials: JSON string with the required fields (e.g., '{"token": "ghp_xxx", "org": "myorg"}')
     """
-    user_id, err = await user_session.require_user(ctx)
+    user_id, err = user_session.require_user(ctx)
     if err:
         return err
 
@@ -983,7 +977,6 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
         return val_err
 
     token_store.set_credentials(user_id, service, creds)
-    audit.log_event(user_id, "service_connected", service=service)
     try:
         await db.log_event(user_id, "service_connected", service=service)
     except Exception:
@@ -999,12 +992,11 @@ async def asibot_disconnect(service: str, ctx: Context) -> str:
     Args:
         service: Service name to disconnect
     """
-    user_id, err = await user_session.require_user(ctx)
+    user_id, err = user_session.require_user(ctx)
     if err:
         return err
 
     token_store.remove_credentials(user_id, service)
-    audit.log_event(user_id, "service_disconnected", service=service)
     try:
         await db.log_event(user_id, "service_disconnected", service=service)
     except Exception:
@@ -1016,7 +1008,7 @@ async def asibot_disconnect(service: str, ctx: Context) -> str:
 @concurrency_limited()
 async def asibot_services(ctx: Context) -> str:
     """List all available services with connection status, enabled/disabled, and read/readwrite mode."""
-    user_id, err = await user_session.require_user(ctx)
+    user_id, err = user_session.require_user(ctx)
     if err:
         return err
 
@@ -1059,7 +1051,7 @@ async def asibot_enable(service: str, ctx: Context) -> str:
     Args:
         service: Service name (e.g., "github", "sharepoint")
     """
-    user_id, err = await user_session.require_user(ctx)
+    user_id, err = user_session.require_user(ctx)
     if err:
         return err
     prefs = token_store.get_service_prefs(user_id, service)
@@ -1076,7 +1068,7 @@ async def asibot_disable(service: str, ctx: Context) -> str:
     Args:
         service: Service name (e.g., "github", "sharepoint")
     """
-    user_id, err = await user_session.require_user(ctx)
+    user_id, err = user_session.require_user(ctx)
     if err:
         return err
     prefs = token_store.get_service_prefs(user_id, service)
@@ -1094,7 +1086,7 @@ async def asibot_set_mode(service: str, mode: str, ctx: Context) -> str:
         service: Service name (e.g., "github", "outlook")
         mode: "read" for read-only, "readwrite" for full access
     """
-    user_id, err = await user_session.require_user(ctx)
+    user_id, err = user_session.require_user(ctx)
     if err:
         return err
     if mode not in ("read", "readwrite"):

@@ -1,6 +1,7 @@
 """Tests for server-level validation and setup logic."""
 
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -119,6 +120,7 @@ class TestSetupStatus:
         server._pending_setups["abc12345"] = {
             "status": "complete",
             "user": {"name": "Test", "user_id": "test@example.com", "api_key": "asb_test"},
+            "_created_at": time.time(),
         }
         result = await server.asibot_setup_status(setup_id="abc12345")
         assert "Setup complete" in result
@@ -129,6 +131,7 @@ class TestSetupStatus:
         server._pending_setups["fail1234"] = {
             "status": "failed",
             "error": "auth_denied",
+            "_created_at": time.time(),
         }
         result = await server.asibot_setup_status(setup_id="fail1234")
         assert "failed" in result.lower()
@@ -136,7 +139,7 @@ class TestSetupStatus:
 
     @pytest.mark.asyncio
     async def test_expired_setup(self):
-        server._pending_setups["exp12345"] = {"status": "expired"}
+        server._pending_setups["exp12345"] = {"status": "expired", "_created_at": time.time()}
         result = await server.asibot_setup_status(setup_id="exp12345")
         assert "timed out" in result.lower()
 
@@ -146,10 +149,12 @@ class TestSetupStatus:
         server._pending_setups["first123"] = {
             "status": "complete",
             "user": {"name": "User1", "user_id": "u1@example.com", "api_key": "asb_1"},
+            "_created_at": time.time(),
         }
         server._pending_setups["second12"] = {
             "status": "complete",
             "user": {"name": "User2", "user_id": "u2@example.com", "api_key": "asb_2"},
+            "_created_at": time.time(),
         }
         # Without setup_id, should get the most recent (last inserted)
         result = await server.asibot_setup_status()

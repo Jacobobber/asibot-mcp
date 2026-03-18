@@ -163,15 +163,14 @@ def test_both_failures_logged_as_critical(tmp_path, caplog):
             patch.object(audit, "_get_audit_logger", return_value=mock_logger),
             patch.object(audit, "_write_jsonl_fallback", side_effect=OSError("fallback also broken")),
             patch("asibot.audit.time.sleep"),  # Skip the retry delay
-            caplog.at_level(logging.CRITICAL, logger="asibot.audit"),
+            patch("asibot.audit.logger") as mock_module_logger,
         ):
             audit.log_tool_call("u@e.com", "critical_tool")
 
     # Should have logged a CRITICAL message with the entry details
-    critical_msgs = [r for r in caplog.records if r.levelno == logging.CRITICAL]
-    assert len(critical_msgs) >= 1
-    assert "AUDIT LOSS" in critical_msgs[0].message
-    assert "critical_tool" in critical_msgs[0].message
+    mock_module_logger.critical.assert_called_once()
+    call_args = mock_module_logger.critical.call_args
+    assert "AUDIT LOSS" in call_args[0][0]
     assert audit.audit_write_failures_total >= 1
     audit._audit_logger = None
 
