@@ -4,6 +4,7 @@ Token stored per-user at ~/.asibot/users/{user_id}/microsoft_token.json (encrypt
 Used by: sharepoint, outlook, teams connectors.
 """
 
+import asyncio
 import logging
 import time
 
@@ -33,6 +34,7 @@ SCOPES = (
 )
 
 _user_clients: dict[str, httpx.AsyncClient] = {}
+_client_lock = asyncio.Lock()
 
 
 async def close_all_clients() -> None:
@@ -124,25 +126,26 @@ async def ensure_auth(user_id: str) -> bool:
     return False
 
 
-def get_client(user_id: str) -> httpx.AsyncClient | None:
+async def get_client(user_id: str) -> httpx.AsyncClient | None:
     """Get an authenticated httpx client for this user's Microsoft Graph calls."""
     token_data = load_token(user_id)
     if not token_data.get("access_token"):
         return None
 
-    client = _user_clients.get(user_id)
-    if client is None:
-        client = httpx.AsyncClient(
-            headers={
-                "Authorization": f"Bearer {token_data['access_token']}",
-                "Content-Type": "application/json",
-            },
-            timeout=30.0,
-        )
-        _user_clients[user_id] = client
-    else:
-        client.headers["Authorization"] = f"Bearer {token_data['access_token']}"
-    return client
+    async with _client_lock:
+        client = _user_clients.get(user_id)
+        if client is None:
+            client = httpx.AsyncClient(
+                headers={
+                    "Authorization": f"Bearer {token_data['access_token']}",
+                    "Content-Type": "application/json",
+                },
+                timeout=30.0,
+            )
+            _user_clients[user_id] = client
+        else:
+            client.headers["Authorization"] = f"Bearer {token_data['access_token']}"
+        return client
 
 
 async def require_graph_client(ctx, service: str = "sharepoint", level: str = "read") -> tuple[httpx.AsyncClient | None, str | None, str | None]:
@@ -162,7 +165,7 @@ async def require_graph_client(ctx, service: str = "sharepoint", level: str = "r
         return None, None, err
     if not await ensure_auth(uid):
         return None, None, "Microsoft 365 not authenticated. Run asibot_setup to sign in."
-    client = get_client(uid)
+    client = await get_client(uid)
     if not client:
         return None, None, "Could not create Microsoft Graph client."
     return client, uid, None

@@ -1,5 +1,6 @@
 """Zoom connector: meetings and recordings via Zoom REST API."""
 
+import asyncio
 import logging
 import time
 
@@ -15,32 +16,37 @@ TOKEN_URL = "https://zoom.us/oauth/token"
 
 # Token cache: account_id -> (token, expires_at)
 _token_cache: dict[str, tuple[str, float]] = {}
+_token_locks: dict[str, asyncio.Lock] = {}
 _TOKEN_MARGIN = 300  # refresh 5 min before expiry
 
 
 async def _get_access_token(creds) -> str:
     """Exchange Server-to-Server OAuth credentials for an access token (cached)."""
     account_id = creds["account_id"]
-    cached = _token_cache.get(account_id)
-    if cached:
-        token, expires_at = cached
-        if time.time() < expires_at - _TOKEN_MARGIN:
-            return token
 
-    async with httpx.AsyncClient(timeout=30.0) as c:
-        r = await c.post(
-            TOKEN_URL,
-            params={"grant_type": "account_credentials", "account_id": account_id},
-            auth=(creds["client_id"], creds["client_secret"]),
-        )
-        r.raise_for_status()
-        data = r.json()
-        token = data.get("access_token")
-        if not token:
-            raise ValueError("Zoom OAuth response missing access_token")
-        expires_in = data.get("expires_in", 3600)
-        _token_cache[account_id] = (token, time.time() + expires_in)
-        return token
+    # Per-account lock prevents duplicate token fetches under concurrent load
+    lock = _token_locks.setdefault(account_id, asyncio.Lock())
+    async with lock:
+        cached = _token_cache.get(account_id)
+        if cached:
+            token, expires_at = cached
+            if time.time() < expires_at - _TOKEN_MARGIN:
+                return token
+
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            r = await c.post(
+                TOKEN_URL,
+                params={"grant_type": "account_credentials", "account_id": account_id},
+                auth=(creds["client_id"], creds["client_secret"]),
+            )
+            r.raise_for_status()
+            data = r.json()
+            token = data.get("access_token")
+            if not token:
+                raise ValueError("Zoom OAuth response missing access_token")
+            expires_in = data.get("expires_in", 3600)
+            _token_cache[account_id] = (token, time.time() + expires_in)
+            return token
 
 
 class ZoomConnector(Connector):
