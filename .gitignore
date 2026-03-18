@@ -18,3 +18,4 @@ master.key
 # Load test artifacts
 tests/load/test_users.csv
 tests/load/results/*/
+.claude/worktrees/
