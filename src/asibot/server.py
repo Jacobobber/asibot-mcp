@@ -6,11 +6,12 @@ import json
 import logging
 import secrets
 import time
+from contextlib import asynccontextmanager
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import audit, auth, token_store, user_session
+from asibot import audit, auth, db, token_store, user_session
 from asibot.connectors import microsoft
 from asibot.config import settings
 from asibot.connectors import registry
@@ -21,6 +22,15 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    """Server lifespan: load sessions from DB on startup, close pool on shutdown."""
+    await user_session.load_sessions_from_db()
+    yield {}
+    await db.close_pool()
+
 
 mcp = FastMCP(
     "asibot",
@@ -33,6 +43,7 @@ mcp = FastMCP(
     ),
     host=settings.host,
     port=settings.port,
+    lifespan=_lifespan,
 )
 
 
@@ -721,8 +732,10 @@ def _cleanup() -> None:
         loop = asyncio.get_event_loop()
         if loop.is_running():
             loop.create_task(microsoft.close_all_clients())
+            loop.create_task(db.close_pool())
         else:
             loop.run_until_complete(microsoft.close_all_clients())
+            loop.run_until_complete(db.close_pool())
     except RuntimeError:
         pass
 

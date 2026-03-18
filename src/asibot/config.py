@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8080
 
+    # Database / sessions
+    db_pool_size: int = 10
+    session_ttl: int = 3600  # seconds
+
     # Microsoft SSO (delegated auth via device code flow — used by all MS365 connectors)
     ms365_tenant_id: str = ""
     ms365_client_id: str = ""

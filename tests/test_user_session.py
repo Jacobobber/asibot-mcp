@@ -1,5 +1,6 @@
 """Tests for user session management, sanitization, and cache eviction."""
 
+import sqlite3
 import time
 from unittest.mock import MagicMock, patch
 
@@ -99,7 +100,7 @@ class TestSessionCache:
             user_session._session_to_user["s1"] = ("a@b.com", now - 100)
             user_session._session_to_user["s2"] = ("b@c.com", now - 50)
             user_session._session_to_user["s3"] = ("c@d.com", now - 10)
-            # At capacity — adding s4 should evict s1 (LRU / oldest)
+            # At capacity -- adding s4 should evict s1 (LRU / oldest)
             user_session._cache_session("s4", "d@e.com")
             assert "s1" not in user_session._session_to_user
             assert "s4" in user_session._session_to_user
@@ -112,10 +113,10 @@ class TestSessionCache:
             user_session._session_to_user["s1"] = ("a@b.com", now - 100)
             user_session._session_to_user["s2"] = ("b@c.com", now - 50)
             user_session._session_to_user["s3"] = ("c@d.com", now - 10)
-            # Access s1 — moves it to end (most recently used)
+            # Access s1 -- moves it to end (most recently used)
             user_session._session_to_user["s1"] = ("a@b.com", now)
             user_session._session_to_user.move_to_end("s1")
-            # Now s2 is the LRU — adding s4 should evict s2, not s1
+            # Now s2 is the LRU -- adding s4 should evict s2, not s1
             user_session._cache_session("s4", "d@e.com")
             assert "s1" in user_session._session_to_user  # protected by access
             assert "s2" not in user_session._session_to_user  # evicted as LRU
@@ -147,7 +148,10 @@ class TestSessionCache:
         headers.get = MagicMock(side_effect=lambda k, d="": {"mcp-session-id": "expired-sess"}.get(k, d))
         ctx.request_context.request.headers = headers
 
-        with patch.object(user_session.auth, "list_users", return_value=[]):
+        with (
+            patch.object(user_session.auth, "list_users", return_value=[]),
+            patch.object(user_session, "_db_lookup_session", return_value=None),
+        ):
             uid, err = user_session.require_user(ctx)
             assert uid is None
             assert "No users" in err
@@ -179,6 +183,7 @@ class TestRateLimiting:
         with (
             patch.object(user_session.auth, "get_user_by_key", return_value=None),
             patch.object(user_session.auth, "list_users", return_value=[]),
+            patch.object(user_session, "_db_lookup_session", return_value=None),
         ):
             uid, err = user_session.require_user(ctx)
             assert uid is None
@@ -224,6 +229,7 @@ class TestSingleUserAutoLogin:
         with (
             patch.object(settings, "transport", "stdio"),
             patch.object(user_session.auth, "list_users", return_value=[mock_user]),
+            patch.object(user_session, "_db_lookup_session", return_value=None),
         ):
             uid, err = user_session.require_user(ctx)
             assert uid == "sole@example.com"
@@ -236,6 +242,7 @@ class TestSingleUserAutoLogin:
         with (
             patch.object(settings, "transport", "streamable-http"),
             patch.object(user_session.auth, "list_users", return_value=[mock_user]),
+            patch.object(user_session, "_db_lookup_session", return_value=None),
         ):
             uid, err = user_session.require_user(ctx)
             assert uid is None
@@ -270,3 +277,211 @@ class TestRequireUser:
             assert "sess-abc" in user_session._session_to_user
             cached_uid, _ = user_session._session_to_user["sess-abc"]
             assert cached_uid == "test@example.com"
+
+
+class TestSessionTTLConfig:
+    """session_ttl should be read from settings instead of hardcoded."""
+
+    def setup_method(self):
+        user_session._session_to_user.clear()
+        user_session._auth_failures.clear()
+
+    def teardown_method(self):
+        user_session._session_to_user.clear()
+        user_session._auth_failures.clear()
+
+    def test_custom_ttl_evicts_stale(self):
+        """Sessions older than settings.session_ttl should be evicted."""
+        now = time.time()
+        with patch.object(settings, "session_ttl", 60):
+            user_session._session_to_user["fresh"] = ("a@b.com", now - 30)
+            user_session._session_to_user["stale"] = ("c@d.com", now - 120)
+            user_session._evict_stale_sessions()
+            assert "fresh" in user_session._session_to_user
+            assert "stale" not in user_session._session_to_user
+
+    def test_custom_ttl_in_require_user(self):
+        """require_user should respect settings.session_ttl for session expiry."""
+        now = time.time()
+        # Session is 90s old; default TTL=3600 would keep it, custom TTL=60 expires it
+        user_session._session_to_user["sess-x"] = ("user@example.com", now - 90)
+
+        ctx = _mock_ctx(session_id="sess-x")
+        with (
+            patch.object(settings, "session_ttl", 60),
+            patch.object(user_session.auth, "list_users", return_value=[]),
+            patch.object(user_session, "_db_lookup_session", return_value=None),
+        ):
+            uid, err = user_session.require_user(ctx)
+            assert uid is None  # expired with TTL=60
+
+
+class TestDBFallback:
+    """Test that require_user falls back to the database when session not in memory."""
+
+    def setup_method(self):
+        user_session._session_to_user.clear()
+        user_session._auth_failures.clear()
+
+    def teardown_method(self):
+        user_session._session_to_user.clear()
+        user_session._auth_failures.clear()
+
+    def test_db_fallback_when_not_in_memory(self):
+        """If session not in memory, check DB and restore to cache."""
+        ctx = _mock_ctx(session_id="db-sess-1")
+        with patch.object(user_session, "_db_lookup_session", return_value="alice@example.com"):
+            uid, err = user_session.require_user(ctx)
+            assert uid == "alice@example.com"
+            assert err is None
+            # Should now be in memory cache
+            assert "db-sess-1" in user_session._session_to_user
+            cached_uid, _ = user_session._session_to_user["db-sess-1"]
+            assert cached_uid == "alice@example.com"
+
+    def test_db_fallback_returns_none_when_not_found(self):
+        """If session not in memory or DB, proceed to API key auth."""
+        ctx = _mock_ctx(session_id="unknown-sess", api_key="valid_key_000")
+        mock_user = {"user_id": "bob@example.com", "name": "Bob"}
+        with (
+            patch.object(user_session, "_db_lookup_session", return_value=None),
+            patch.object(user_session.auth, "get_user_by_key", return_value=mock_user),
+        ):
+            uid, err = user_session.require_user(ctx)
+            assert uid == "bob@example.com"
+            assert err is None
+
+    def test_session_survives_cache_clear(self, tmp_path):
+        """Session loaded from DB survives in-memory cache being cleared."""
+        db_file = tmp_path / "asibot.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            )
+            """
+        )
+        now = time.time()
+        conn.execute(
+            "INSERT INTO sessions VALUES (?, ?, ?, ?)",
+            ("persist-sess", "carol@example.com", now, now + 3600),
+        )
+        conn.commit()
+        conn.close()
+
+        # Point _db_path to our test DB
+        with patch.object(user_session, "_db_path", return_value=str(db_file)):
+            # Memory cache is empty -- verify DB fallback works
+            ctx = _mock_ctx(session_id="persist-sess")
+            uid, err = user_session.require_user(ctx)
+            assert uid == "carol@example.com"
+            assert err is None
+
+    def test_expired_db_session_not_returned(self, tmp_path):
+        """Expired sessions in DB should not be returned."""
+        db_file = tmp_path / "asibot.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            )
+            """
+        )
+        now = time.time()
+        conn.execute(
+            "INSERT INTO sessions VALUES (?, ?, ?, ?)",
+            ("old-sess", "dave@example.com", now - 7200, now - 3600),
+        )
+        conn.commit()
+        conn.close()
+
+        with (
+            patch.object(user_session, "_db_path", return_value=str(db_file)),
+            patch.object(user_session.auth, "list_users", return_value=[]),
+        ):
+            ctx = _mock_ctx(session_id="old-sess")
+            uid, err = user_session.require_user(ctx)
+            assert uid is None
+
+
+class TestInvalidationClearsBoth:
+    """Invalidation should clear both in-memory and DB sessions."""
+
+    def setup_method(self):
+        user_session._session_to_user.clear()
+        user_session._auth_failures.clear()
+
+    def teardown_method(self):
+        user_session._session_to_user.clear()
+        user_session._auth_failures.clear()
+
+    def test_invalidation_clears_memory(self):
+        """In-memory sessions are cleared on invalidation."""
+        now = time.time()
+        user_session._session_to_user["s1"] = ("alice@example.com", now)
+        user_session._session_to_user["s2"] = ("bob@example.com", now)
+        count = user_session.invalidate_user_sessions("alice@example.com")
+        assert count == 1
+        assert "s1" not in user_session._session_to_user
+        assert "s2" in user_session._session_to_user
+
+    def test_invalidation_schedules_db_delete(self):
+        """invalidate_user_sessions should call _schedule_db_delete_user."""
+        now = time.time()
+        user_session._session_to_user["s1"] = ("alice@example.com", now)
+        with patch.object(user_session, "_schedule_db_delete_user") as mock_delete:
+            user_session.invalidate_user_sessions("alice@example.com")
+            mock_delete.assert_called_once_with("alice@example.com")
+
+
+class TestLoadSessionsFromDB:
+    """Test startup loading of sessions from the database."""
+
+    def setup_method(self):
+        user_session._session_to_user.clear()
+
+    def teardown_method(self):
+        user_session._session_to_user.clear()
+
+    @pytest.mark.asyncio
+    async def test_load_sessions_populates_memory(self):
+        """load_sessions_from_db should populate the in-memory cache."""
+        mock_sessions = {
+            "sess-a": ("alice@example.com", time.time()),
+            "sess-b": ("bob@example.com", time.time()),
+        }
+        with patch("asibot.db.load_active_sessions", return_value=mock_sessions):
+            count = await user_session.load_sessions_from_db()
+            assert count == 2
+            assert "sess-a" in user_session._session_to_user
+            assert "sess-b" in user_session._session_to_user
+            uid_a, _ = user_session._session_to_user["sess-a"]
+            assert uid_a == "alice@example.com"
+
+    @pytest.mark.asyncio
+    async def test_load_sessions_handles_failure(self):
+        """load_sessions_from_db should return 0 on failure."""
+        with patch("asibot.db.load_active_sessions", side_effect=Exception("DB error")):
+            count = await user_session.load_sessions_from_db()
+            assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_load_sessions_respects_max_cap(self):
+        """load_sessions_from_db should stop at _MAX_SESSIONS."""
+        now = time.time()
+        mock_sessions = {f"sess-{i}": (f"user{i}@example.com", now) for i in range(100)}
+        with (
+            patch.object(user_session, "_MAX_SESSIONS", 10),
+            patch("asibot.db.load_active_sessions", return_value=mock_sessions),
+        ):
+            count = await user_session.load_sessions_from_db()
+            assert count == 10
+            assert len(user_session._session_to_user) == 10
