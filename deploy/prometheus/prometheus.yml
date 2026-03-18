@@ -1,0 +1,18 @@
+# Prometheus configuration for Asibot
+# Scrapes the Asibot metrics endpoint exposed on port 9090
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  - job_name: "asibot"
+    metrics_path: "/metrics"
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["asibot:9090"]
+        labels:
+          service: "asibot"

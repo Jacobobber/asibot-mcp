@@ -1,8 +1,11 @@
 """Prometheus metrics for monitoring and observability.
 
-Optional dependency: metrics are no-ops if prometheus_client is not installed.
-When enabled, exposes a /metrics endpoint on a configurable host/port
-(default 127.0.0.1:9090 — localhost only for security).
+Exposes a /metrics endpoint on a configurable host/port
+(default 127.0.0.1:9090 -- localhost only for security).
+
+prometheus_client is a required dependency. If it is not installed,
+the import will fail loudly at startup -- this is intentional for
+enterprise deployments where silent metric loss is unacceptable.
 
 Instrumented:
 - Request duration and count by tool/service/status
@@ -10,93 +13,65 @@ Instrumented:
 - Active sessions and cache hit/miss rates
 - Auth failures
 - HTTP connection pool stats
+- Session cache evictions
+- Audit write failures
 """
 
 import logging
+import secrets
 import time
 import uuid
 from contextlib import contextmanager
 from http.server import HTTPServer
 from typing import Generator
 
+from prometheus_client import Counter, Gauge, Histogram, MetricsHandler
+
 logger = logging.getLogger(__name__)
-
-try:
-    from prometheus_client import Counter, Gauge, Histogram, MetricsHandler
-
-    _HAS_PROMETHEUS = True
-except ImportError:
-    _HAS_PROMETHEUS = False
-
-
-# --- No-op fallbacks when prometheus_client is not installed ---
-
-
-class _NoOpMetric:
-    """Quacks like a prometheus_client metric but does nothing."""
-
-    def labels(self, **_kw):
-        return self
-
-    def inc(self, _amount=1):
-        pass
-
-    def dec(self, _amount=1):
-        pass
-
-    def set(self, _value):
-        pass
-
-    def observe(self, _value):
-        pass
-
-
-_NOOP = _NoOpMetric()
 
 # --- Metrics definitions ---
 
-if _HAS_PROMETHEUS:
-    request_duration = Histogram(
-        "asibot_request_duration_seconds",
-        "Tool call HTTP request duration",
-        ["service", "status"],
-        buckets=[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0],
-    )
-    request_total = Counter(
-        "asibot_requests_total",
-        "Total HTTP requests made by connectors",
-        ["service", "status"],
-    )
-    circuit_state = Gauge(
-        "asibot_circuit_state",
-        "Circuit breaker state (0=closed, 1=half_open, 2=open)",
-        ["service"],
-    )
-    active_sessions = Gauge(
-        "asibot_active_sessions",
-        "Number of active user sessions",
-    )
-    auth_failures_total = Counter(
-        "asibot_auth_failures_total",
-        "Authentication failures",
-        ["reason"],
-    )
-    session_cache_hits = Counter(
-        "asibot_session_cache_hits_total",
-        "Session cache hits (in-memory)",
-    )
-    session_cache_misses = Counter(
-        "asibot_session_cache_misses_total",
-        "Session cache misses (fell through to DB)",
-    )
-else:
-    request_duration = _NOOP
-    request_total = _NOOP
-    circuit_state = _NOOP
-    active_sessions = _NOOP
-    auth_failures_total = _NOOP
-    session_cache_hits = _NOOP
-    session_cache_misses = _NOOP
+request_duration = Histogram(
+    "asibot_request_duration_seconds",
+    "Tool call HTTP request duration",
+    ["service", "status"],
+    buckets=[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0],
+)
+request_total = Counter(
+    "asibot_requests_total",
+    "Total HTTP requests made by connectors",
+    ["service", "status"],
+)
+circuit_state = Gauge(
+    "asibot_circuit_state",
+    "Circuit breaker state (0=closed, 1=half_open, 2=open)",
+    ["service"],
+)
+active_sessions = Gauge(
+    "asibot_active_sessions",
+    "Number of active user sessions",
+)
+auth_failures_total = Counter(
+    "asibot_auth_failures_total",
+    "Authentication failures",
+    ["reason"],
+)
+session_cache_hits = Counter(
+    "asibot_session_cache_hits_total",
+    "Session cache hits (in-memory)",
+)
+session_cache_misses = Counter(
+    "asibot_session_cache_misses_total",
+    "Session cache misses (fell through to DB)",
+)
+session_cache_evictions = Counter(
+    "asibot_session_cache_evictions_total",
+    "Session cache LRU evictions",
+)
+audit_write_failures = Counter(
+    "asibot_audit_write_failures_total",
+    "Audit log write failures",
+)
 
 
 # --- Request correlation IDs ---
@@ -141,7 +116,8 @@ def _make_auth_handler(bearer_token: str):
     class AuthMetricsHandler(MetricsHandler):
         def do_GET(self):
             auth_header = self.headers.get("Authorization", "")
-            if auth_header != f"Bearer {bearer_token}":
+            expected = f"Bearer {bearer_token}"
+            if not secrets.compare_digest(auth_header, expected):
                 self.send_response(401)
                 self.send_header("WWW-Authenticate", "Bearer")
                 self.end_headers()
@@ -165,16 +141,15 @@ def start_metrics_server(
 
     Args:
         port: Port to listen on (default 9090).
-        host: Bind address (default "127.0.0.1" — localhost only).
+        host: Bind address (default "127.0.0.1" -- localhost only).
               Use "0.0.0.0" only behind a reverse proxy or firewall.
         bearer_token: If set, require ``Authorization: Bearer <token>``
               on every request to the metrics endpoint.
 
-    Safe to call if prometheus_client is not installed (no-op).
     Safe to call multiple times (idempotent).
     """
     global _metrics_started
-    if _metrics_started or not _HAS_PROMETHEUS:
+    if _metrics_started:
         return
     try:
         if bearer_token:

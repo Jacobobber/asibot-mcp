@@ -1,0 +1,81 @@
+# Asibot Prometheus AlertManager rules
+# These alerts use metric names defined in src/asibot/metrics.py
+
+groups:
+  - name: asibot.rules
+    rules:
+
+      # SEV2: Error rate exceeds 5% for 5 minutes
+      - alert: AsiBot_HighErrorRate
+        expr: |
+          (
+            sum(rate(asibot_requests_total{status="error"}[5m]))
+            /
+            sum(rate(asibot_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: SEV2
+        annotations:
+          summary: "Asibot error rate above 5%"
+          description: >-
+            Error rate is {{ $value | humanizePercentage }} over the last 5 minutes.
+            Check service health and connector logs.
+
+      # SEV2: Circuit breaker stuck in OPEN state for > 2 minutes
+      - alert: AsiBot_CircuitBreakerOpen
+        expr: asibot_circuit_state == 2
+        for: 2m
+        labels:
+          severity: SEV2
+        annotations:
+          summary: "Circuit breaker OPEN for service {{ $labels.service }}"
+          description: >-
+            The circuit breaker for {{ $labels.service }} has been in OPEN state
+            for more than 2 minutes. The downstream service may be unhealthy.
+
+      # SEV1: Auth failure spike -- more than 10 failures in 5 minutes
+      - alert: AsiBot_AuthFailureSpike
+        expr: sum(increase(asibot_auth_failures_total[5m])) > 10
+        labels:
+          severity: SEV1
+        annotations:
+          summary: "Authentication failure spike detected"
+          description: >-
+            {{ $value }} auth failures in the last 5 minutes.
+            Possible credential stuffing or misconfigured client.
+
+      # SEV2: p95 request latency exceeds 2 seconds for 5 minutes
+      - alert: AsiBot_HighLatency
+        expr: histogram_quantile(0.95, sum(rate(asibot_request_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: SEV2
+        annotations:
+          summary: "Asibot p95 latency above 2 seconds"
+          description: >-
+            The 95th percentile request latency is {{ $value | humanizeDuration }}
+            over the last 5 minutes. Check for slow downstream services.
+
+      # SEV3: Session cache eviction rate exceeds 100/min for 5 minutes
+      - alert: AsiBot_SessionCacheEviction
+        expr: rate(asibot_session_cache_evictions_total[5m]) * 60 > 100
+        for: 5m
+        labels:
+          severity: SEV3
+        annotations:
+          summary: "High session cache eviction rate"
+          description: >-
+            Session cache eviction rate is {{ $value | humanize }}/min.
+            Consider increasing ASIBOT_SESSION_CACHE_SIZE.
+
+      # SEV1: Any audit write failure
+      - alert: AsiBot_AuditWriteFailure
+        expr: increase(asibot_audit_write_failures_total[1m]) > 0
+        labels:
+          severity: SEV1
+        annotations:
+          summary: "Audit log write failure detected"
+          description: >-
+            {{ $value }} audit write failure(s) in the last minute.
+            Audit integrity is compromised -- investigate disk/permissions immediately.

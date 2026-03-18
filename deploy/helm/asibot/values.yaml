@@ -1,0 +1,208 @@
+# Asibot Helm chart values
+
+# -- Number of Asibot server replicas
+replicaCount: 3
+
+image:
+  # -- Container image repository
+  repository: asibot
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image tag (defaults to Chart appVersion)
+  tag: ""
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+
+# -- Override the release name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+# -- Asibot server configuration (non-secret, injected as ConfigMap)
+config:
+  transport: "streamable-http"
+  host: "0.0.0.0"
+  port: 8080
+  dashboardPort: 8081
+  dashboardEnabled: true
+  dataDir: "/data"
+  allowInsecureHttp: true  # TLS terminated at Ingress
+  pgPoolMinSize: 10
+  pgPoolMaxSize: 100
+  sessionTtl: 3600
+  absoluteSessionTtl: 28800
+  sessionCacheSize: 1000
+  maxConcurrentRequests: 2000
+  maxConcurrentPerUser: 10
+  maxConcurrentPerService: 200
+  maxConcurrentSetups: 100
+  poolMaxConnections: 20
+  poolMaxClients: 200
+  metricsEnabled: true
+  metricsHost: "0.0.0.0"
+  metricsPort: 9090
+  auditRetentionDays: 365
+  globalRateLimitDefault: 200
+  perUserRateLimitDefault: 30
+
+# -- Secrets (provide via --set or external-secrets in production)
+secrets:
+  # -- PostgreSQL password (REQUIRED)
+  postgresPassword: ""
+  # -- Full database URL (auto-generated if empty, using postgresPassword)
+  databaseUrl: ""
+  # -- Microsoft 365 tenant ID
+  ms365TenantId: ""
+  # -- Microsoft 365 client ID
+  ms365ClientId: ""
+  # -- GitHub OAuth client ID
+  githubClientId: ""
+  # -- Google OAuth client ID
+  googleClientId: ""
+  # -- Google OAuth client secret
+  googleClientSecret: ""
+  # -- Metrics endpoint bearer token
+  metricsBearerToken: ""
+
+# -- Use an existing secret instead of creating one
+existingSecret: ""
+
+# -- Pod resource requests and limits
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# -- Liveness probe configuration
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 5
+
+# -- Readiness probe configuration
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- HTTP port
+  port: 8080
+  # -- Dashboard port
+  dashboardPort: 8081
+  # -- Metrics port
+  metricsPort: 9090
+
+ingress:
+  # -- Enable ingress
+  enabled: false
+  # -- Ingress class name
+  className: nginx
+  # -- Ingress annotations
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  # -- Ingress hosts
+  hosts:
+    - host: asibot.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS configuration
+  tls:
+    - secretName: asibot-tls
+      hosts:
+        - asibot.example.com
+
+autoscaling:
+  # -- Enable HorizontalPodAutoscaler
+  enabled: true
+  # -- Minimum replicas
+  minReplicas: 3
+  # -- Maximum replicas
+  maxReplicas: 10
+  # -- Target CPU utilization percentage
+  targetCPUUtilizationPercentage: 70
+  # -- Target memory utilization percentage
+  targetMemoryUtilizationPercentage: 80
+  # -- Scale-down stabilization window (seconds)
+  scaleDownStabilizationSeconds: 300
+
+# -- Pod anti-affinity weight (0 to disable)
+antiAffinityWeight: 100
+
+# -- Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Additional pod annotations
+podAnnotations: {}
+
+# -- Additional pod labels
+podLabels: {}
+
+# -- Deployment strategy
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+# -- PostgreSQL sub-chart settings (bundled single-instance for dev/test)
+postgresql:
+  # -- Deploy bundled PostgreSQL StatefulSet
+  enabled: true
+  image: postgres:16-alpine
+  storage: 20Gi
+  # -- Storage class (empty = cluster default)
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+# -- PgBouncer settings
+pgbouncer:
+  # -- Deploy bundled PgBouncer
+  enabled: true
+  replicas: 2
+  image: edoburu/pgbouncer:latest
+  maxClientConn: 1000
+  defaultPoolSize: 50
+  minPoolSize: 10
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

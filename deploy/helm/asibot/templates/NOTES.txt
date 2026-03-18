@@ -1,0 +1,35 @@
+Asibot MCP Server has been deployed.
+
+{{- if .Values.ingress.enabled }}
+
+Access the server at:
+{{- range .Values.ingress.hosts }}
+  https://{{ .host }}
+{{- end }}
+{{- else }}
+
+The server is available inside the cluster at:
+  {{ include "asibot.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+To port-forward for local access:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "asibot.fullname" . }} 8080:{{ .Values.service.port }}
+{{- end }}
+
+Dashboard:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "asibot.fullname" . }} 8081:{{ .Values.service.dashboardPort }}
+
+Metrics (Prometheus):
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "asibot.fullname" . }} 9090:{{ .Values.service.metricsPort }}
+
+{{- if .Values.autoscaling.enabled }}
+
+Autoscaling is enabled ({{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} replicas).
+Check HPA status:
+  kubectl get hpa -n {{ .Release.Namespace }} {{ include "asibot.fullname" . }}
+{{- end }}
+
+{{- if not .Values.secrets.postgresPassword }}
+
+WARNING: No PostgreSQL password was set. Set one with:
+  helm upgrade {{ .Release.Name }} . --set secrets.postgresPassword=YOUR_STRONG_PASSWORD
+{{- end }}

@@ -1,4 +1,36 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: asibot
+      POSTGRES_USER: asibot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asibot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    volumes:
+      - ./deploy/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./deploy/pgbouncer-userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    environment:
+      DATABASE_URL: postgresql://asibot:${POSTGRES_PASSWORD}@postgres:5432/asibot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U asibot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   nginx:
     image: nginx:1.27-alpine
     ports:
@@ -24,11 +56,21 @@ services:
     expose:
       - "8080"
       - "8081"
+      - "9090"
     volumes:
       - asibot-data:/data
     env_file: .env
     environment:
-      - ASIBOT_ALLOW_INSECURE_HTTP=true  # TLS terminates at nginx
+      # ASIBOT_ALLOW_INSECURE_HTTP: required because the asibot container
+      # communicates with Nginx over the internal Docker network via plain HTTP.
+      # TLS is terminated at the Nginx reverse proxy (port 443). External clients
+      # never reach this container directly — only Nginx can (no ports are published).
+      - ASIBOT_ALLOW_INSECURE_HTTP=true
+      # Route through PgBouncer (port 6432) instead of connecting directly to Postgres
+      - ASIBOT_DATABASE_URL=postgresql://asibot:${POSTGRES_PASSWORD}@pgbouncer:6432/asibot
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
@@ -42,5 +84,22 @@ services:
       retries: 3
       start_period: 10s
 
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - asibot
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+
 volumes:
   asibot-data:
+  pg-data:
+  prometheus-data:

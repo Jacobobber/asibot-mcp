@@ -1,0 +1,13 @@
+apiVersion: v2
+name: asibot
+description: Asibot MCP RAG agent - enterprise connector platform
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - mcp
+  - rag
+  - connectors
+  - ai
+maintainers:
+  - name: Asibot Team
