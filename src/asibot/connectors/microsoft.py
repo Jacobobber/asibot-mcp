@@ -1,10 +1,9 @@
 """Shared Microsoft Graph API auth. One token covers all MS365 services.
 
-Token stored per-user at ~/.asibot/users/{user_id}/microsoft_token.json
+Token stored per-user at ~/.asibot/users/{user_id}/microsoft_token.json (encrypted)
 Used by: sharepoint, outlook, teams connectors.
 """
 
-import json
 import logging
 import time
 
@@ -12,6 +11,7 @@ import httpx
 
 from asibot import user_session
 from asibot.config import settings
+from asibot.crypto import load_encrypted, save_encrypted
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +32,27 @@ SCOPES = (
     "offline_access"
 )
 
-# Write/agentic scopes (List 2 — add when admin approves)
-# SCOPES_WRITE = (
-#     "Mail.Send "
-#     "Mail.ReadWrite "
-#     "Calendars.ReadWrite "
-#     "Files.ReadWrite.All "
-#     "ChannelMessage.Send "
-#     "Chat.ReadWrite "
-#     "Tasks.ReadWrite "
-#     "Notes.ReadWrite.All"
-# )
-
 _user_clients: dict[str, httpx.AsyncClient] = {}
+
+
+async def close_all_clients() -> None:
+    """Close all cached HTTP clients. Call on server shutdown."""
+    for uid, client in list(_user_clients.items()):
+        try:
+            await client.aclose()
+        except Exception:
+            logger.warning("Failed to close client for user '%s'", uid)
+    _user_clients.clear()
+
+
+async def close_client(user_id: str) -> None:
+    """Close and remove the cached client for a specific user."""
+    client = _user_clients.pop(user_id, None)
+    if client:
+        try:
+            await client.aclose()
+        except Exception:
+            logger.warning("Failed to close client for user '%s'", user_id)
 
 
 def token_path(user_id: str):
@@ -52,19 +60,11 @@ def token_path(user_id: str):
 
 
 def load_token(user_id: str) -> dict:
-    path = token_path(user_id)
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            return {}
-    return {}
+    return load_encrypted(token_path(user_id))
 
 
 def save_token(user_id: str, token_data: dict) -> None:
-    path = token_path(user_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(token_data))
+    save_encrypted(token_path(user_id), token_data)
 
 
 def is_expired(token_data: dict) -> bool:
@@ -74,6 +74,10 @@ def is_expired(token_data: dict) -> bool:
 async def refresh_token(user_id: str, token_data: dict) -> bool:
     tenant_id = settings.sharepoint_tenant_id
     client_id = settings.sharepoint_client_id
+    rt = token_data.get("refresh_token")
+    if not rt:
+        logger.warning("Microsoft: no refresh_token for user '%s'", user_id)
+        return False
 
     try:
         async with httpx.AsyncClient() as http:
@@ -82,7 +86,7 @@ async def refresh_token(user_id: str, token_data: dict) -> bool:
                 data={
                     "grant_type": "refresh_token",
                     "client_id": client_id,
-                    "refresh_token": token_data["refresh_token"],
+                    "refresh_token": rt,
                     "scope": SCOPES,
                 },
             )
@@ -91,16 +95,21 @@ async def refresh_token(user_id: str, token_data: dict) -> bool:
 
         new_token = {
             "access_token": data["access_token"],
-            "refresh_token": data.get("refresh_token", token_data["refresh_token"]),
+            "refresh_token": data.get("refresh_token", rt),
             "expires_at": time.time() + data.get("expires_in", 3600),
         }
         save_token(user_id, new_token)
-        # Update client if cached
+        logger.info("Microsoft: refreshed token for user '%s'", user_id)
+        # Update cached client only after successful save
         if user_id in _user_clients:
             _user_clients[user_id].headers["Authorization"] = f"Bearer {new_token['access_token']}"
-        logger.info("Microsoft: refreshed token for user '%s'", user_id)
         return True
-    except Exception:
+    except httpx.HTTPStatusError:
+        logger.exception("Microsoft: token refresh HTTP error for user '%s'", user_id)
+        # Invalidate cached client on auth failure
+        _user_clients.pop(user_id, None)
+        return False
+    except (httpx.RequestError, KeyError, ValueError):
         logger.exception("Microsoft: token refresh failed for user '%s'", user_id)
         return False
 

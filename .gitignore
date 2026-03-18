@@ -13,3 +13,4 @@ data/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+master.key

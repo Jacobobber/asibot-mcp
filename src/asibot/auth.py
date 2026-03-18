@@ -1,23 +1,15 @@
 """API key authentication and user store.
 
-Users are stored at ~/.asibot/users.json:
-{
-    "api_key_abc123": {
-        "user_id": "jacob@asirobots.com",
-        "name": "Jacob Malm",
-        "api_key": "api_key_abc123",
-        "created_at": "2026-03-17T12:00:00Z"
-    }
-}
+Users are stored encrypted at ~/.asibot/users.json.
 """
 
-import json
 import logging
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
 from asibot.config import settings
+from asibot.crypto import load_encrypted, save_encrypted
 
 logger = logging.getLogger(__name__)
 
@@ -27,16 +19,12 @@ _store_path: Path = settings.data_dir / "users.json"
 
 def _load() -> None:
     global _users
-    if _store_path.exists():
-        try:
-            _users = json.loads(_store_path.read_text())
-        except Exception:
-            _users = {}
+    _users = load_encrypted(_store_path)
 
 
 def _save() -> None:
     settings.ensure_dirs()
-    _store_path.write_text(json.dumps(_users, indent=2))
+    save_encrypted(_store_path, _users)
 
 
 def create_user(email: str, name: str) -> dict:
@@ -73,6 +61,25 @@ def get_user_by_email(email: str) -> dict | None:
     _load()
     for user in _users.values():
         if user["user_id"] == email:
+            return user
+    return None
+
+
+def rotate_key(email: str) -> dict | None:
+    """Generate a new API key for a user. Invalidates the old key.
+
+    Returns the updated user dict, or None if user not found.
+    """
+    _load()
+    for old_key, user in list(_users.items()):
+        if user["user_id"] == email:
+            new_key = f"asb_{secrets.token_urlsafe(32)}"
+            user["api_key"] = new_key
+            user["key_rotated_at"] = datetime.now(timezone.utc).isoformat()
+            del _users[old_key]
+            _users[new_key] = user
+            _save()
+            logger.info("Rotated API key for user %s", email)
             return user
     return None
 

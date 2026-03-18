@@ -2,24 +2,12 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
-
-
-def _make_client(creds):
-    if not creds.get("token") or not creds.get("instance_url"):
-        return None
-    base = f"{creds['instance_url']}/services/data/v59.0"
-    return httpx.AsyncClient(
-        base_url=base,
-        headers={"Authorization": f"Bearer {creds['token']}"},
-        timeout=30.0,
-    )
 
 
 class SalesforceConnector(Connector):
@@ -45,12 +33,21 @@ class SalesforceConnector(Connector):
                 query: Search query text
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "salesforce", _make_client, "read")
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "salesforce", level="read")
             if err:
                 return err
             sosl = f"FIND {{{query}}} IN ALL FIELDS RETURNING Account(Name, Id), Contact(Name, Email, Id), Opportunity(Name, StageName, Amount, Id) LIMIT {limit}"
-            r = await client.get("/search", params={"q": sosl})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", "/search",
+                service="Salesforce", action="search",
+                params={"q": sosl},
+            )
+            if err:
+                return err
             results = r.json().get("searchRecords", [])
             if not results:
                 return "No records found."
@@ -74,22 +71,33 @@ class SalesforceConnector(Connector):
             Args:
                 soql: The SOQL query string (e.g., "SELECT Id, Name FROM Account LIMIT 10")
             """
-            client, uid, err = token_store.require_service(ctx, "salesforce", _make_client, "read")
+            err = validation.validate_query(soql, "soql")
             if err:
                 return err
-            r = await client.get("/query", params={"q": soql})
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "salesforce", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", "/query",
+                service="Salesforce", action="query",
+                params={"q": soql},
+            )
+            if err:
+                return err
             data = r.json()
             records = data.get("records", [])
             total = data.get("totalSize", 0)
+            done = data.get("done", True)
             if not records:
                 return "Query returned no records."
-            lines = [f"Total: {total} record(s)\n"]
+            lines = [f"Total: {total} record(s) | Showing: {len(records)}\n"]
             for rec in records:
                 obj_type = rec.get("attributes", {}).get("type", "?")
                 fields = {k: v for k, v in rec.items() if k != "attributes"}
                 field_str = " | ".join(f"{k}: {v}" for k, v in fields.items())
                 lines.append(f"[{obj_type}] {field_str}")
+            if not done:
+                lines.append(f"\n(More records available — add LIMIT or narrow your query to see all {total})")
             return "\n".join(lines)
 
         @mcp.tool()
@@ -100,11 +108,21 @@ class SalesforceConnector(Connector):
                 object_type: Salesforce object type (e.g., "Account", "Contact", "Opportunity")
                 record_id: The record ID
             """
-            client, uid, err = token_store.require_service(ctx, "salesforce", _make_client, "read")
+            err = validation.validate_sf_object_type(object_type)
             if err:
                 return err
-            r = await client.get(f"/sobjects/{object_type}/{record_id}")
-            r.raise_for_status()
+            err = validation.validate_id(record_id, "record_id")
+            if err:
+                return err
+            client, uid, err = token_store.require_service(ctx, "salesforce", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"/sobjects/{object_type}/{record_id}",
+                service="Salesforce", action="get record",
+            )
+            if err:
+                return err
             rec = r.json()
             fields = {k: v for k, v in rec.items() if k != "attributes" and v is not None}
             lines = [f"[{object_type}] {rec.get('Name', rec.get('Id', '?'))}\n"]

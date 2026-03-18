@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://api.na1.adobesign.com/api/rest/v6"
-
-
-def _make_client(creds):
-    if not creds.get("token"):
-        return None
-    return httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {creds['token']}"},
-        timeout=30.0,
-    )
 
 
 class AdobeSignConnector(Connector):
@@ -43,19 +33,17 @@ class AdobeSignConnector(Connector):
             Args:
                 limit: Max results (default: 20)
             """
-            client, uid, err = token_store.require_service(ctx, "adobe_sign", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "adobe_sign", level="read")
             if err:
                 return err
-            r = await client.get(
-                f"{API}/agreements",
-                params={"pageSize": limit},
-            )
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{API}/agreements", service="Adobe Sign", action="list agreements", params={"pageSize": limit})
+            if err:
+                return err
             agreements = r.json().get("userAgreementList", [])
             if not agreements:
                 return "No agreements found."
             return "\n\n".join(
-                f"{a.get('name', 'Untitled')}\n  ID: {a['id']} | Status: {a.get('status', '?')} | Modified: {a.get('lastEventDate', '?')[:10]}"
+                f"{a.get('name', 'Untitled')}\n  ID: {a.get('id', '?')} | Status: {a.get('status', '?')} | Modified: {(a.get('lastEventDate') or '?')[:10]}"
                 for a in agreements
             )
 
@@ -66,11 +54,15 @@ class AdobeSignConnector(Connector):
             Args:
                 agreement_id: The agreement ID
             """
-            client, uid, err = token_store.require_service(ctx, "adobe_sign", _make_client, "read")
+            err = validation.validate_id(agreement_id, "agreement_id")
             if err:
                 return err
-            r = await client.get(f"{API}/agreements/{agreement_id}")
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "adobe_sign", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/agreements/{agreement_id}", service="Adobe Sign", action="get agreement")
+            if err:
+                return err
             a = r.json()
             # Get participant info
             participants = []
@@ -80,7 +72,7 @@ class AdobeSignConnector(Connector):
             part_str = ", ".join(participants) if participants else "none"
             return (
                 f"{a.get('name', 'Untitled')}\n"
-                f"ID: {a['id']} | Status: {a.get('status', '?')}\n"
+                f"ID: {a.get('id', '?')} | Status: {a.get('status', '?')}\n"
                 f"Created: {a.get('createdDate', '?')}\n"
                 f"Message: {a.get('message', 'None')}\n"
                 f"Participants: {part_str}"

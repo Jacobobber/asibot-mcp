@@ -1,19 +1,19 @@
 """Asibot MCP server entry point."""
 
+import asyncio
+import atexit
 import json
 import logging
+import secrets
 import time
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import auth, token_store, user_session
+from asibot import audit, auth, token_store, user_session
 from asibot.connectors import microsoft
 from asibot.config import settings
 from asibot.connectors import registry
-# Connectors are imported dynamically as they're built
-# from asibot.connectors.X import XConnector
-from asibot.rag import ingest, search
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,10 +25,10 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP(
     "asibot",
     instructions=(
-        "Asibot is a personal RAG agent. "
+        "Asibot connects you to your enterprise tools. "
         "New users: call asibot_setup to create your account (one-time only). "
-        "Use search_documents to find information from ingested documents. "
-        "Use ingest_file or ingest_directory to add new documents. "
+        "Use asibot_services to see available connectors. "
+        "Use asibot_connect to link a service. "
         "Always cite sources in your responses."
     ),
     host=settings.host,
@@ -82,10 +82,17 @@ async def asibot_setup(ctx: Context) -> str:
     expires_in = data.get("expires_in", 900)
     interval = data.get("interval", 5)
 
+    # Generate a cryptographic setup_id (not derived from device_code)
+    setup_id = secrets.token_urlsafe(16)
+
+    # Enforce size cap and clean up expired entries before adding
+    _cleanup_pending_setups()
+    if len(_pending_setups) >= _MAX_PENDING_SETUPS:
+        return "Too many pending setups. Please try again later."
+
     # Poll for token in background
-    import asyncio
     asyncio.create_task(_complete_setup(
-        tenant_id, client_id, device_code, expires_in, interval
+        tenant_id, client_id, device_code, expires_in, interval, setup_id
     ))
 
     return (
@@ -93,45 +100,70 @@ async def asibot_setup(ctx: Context) -> str:
         f"1. Go to: {verification_uri}\n"
         f"2. Enter code: {user_code}\n"
         f"3. Sign in with your Microsoft account\n\n"
-        f"After signing in, call asibot_setup_status to get your API key and config.\n"
+        f"After signing in, call asibot_setup_status with setup_id=\"{setup_id}\" "
+        f"to get your API key and config.\n"
         f"(Waiting up to {expires_in // 60} minutes...)"
     )
 
 
-# Temporary storage for pending setups
-_pending_setups: dict[str, dict] = {}  # "latest" -> setup result
+# Temporary storage for pending setups, keyed by setup_id
+_pending_setups: dict[str, dict] = {}
+_SETUP_TTL = 900  # 15 minutes — matches device code expiry
+_MAX_PENDING_SETUPS = 100
+
+
+def _cleanup_pending_setups() -> None:
+    """Remove expired entries from _pending_setups."""
+    now = time.time()
+    expired = [k for k, v in _pending_setups.items() if now - v.get("_created_at", 0) > _SETUP_TTL]
+    for k in expired:
+        _pending_setups.pop(k, None)
 
 
 async def _complete_setup(
-    tenant_id: str, client_id: str, device_code: str, expires_in: int, interval: int
+    tenant_id: str, client_id: str, device_code: str, expires_in: int, interval: int,
+    setup_id: str = "",
 ) -> None:
     """Poll Microsoft for token, then create user."""
-    import asyncio
-
+    if not setup_id:
+        setup_id = secrets.token_urlsafe(16)
     deadline = time.time() + expires_in
     token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 
     while time.time() < deadline:
         await asyncio.sleep(interval)
 
-        async with httpx.AsyncClient() as http:
-            resp = await http.post(token_url, data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "client_id": client_id,
-                "device_code": device_code,
-            })
+        try:
+            async with httpx.AsyncClient() as http:
+                resp = await http.post(token_url, data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "client_id": client_id,
+                    "device_code": device_code,
+                })
+        except httpx.RequestError as e:
+            logger.warning("Setup poll request failed: %s", e)
+            continue
 
         data = resp.json()
 
         if "access_token" in data:
-            # Get user profile from Microsoft
-            async with httpx.AsyncClient() as http:
-                profile_resp = await http.get(
-                    "https://graph.microsoft.com/v1.0/me",
-                    headers={"Authorization": f"Bearer {data['access_token']}"},
-                )
-                profile_resp.raise_for_status()
-                profile = profile_resp.json()
+            try:
+                # Get user profile from Microsoft
+                async with httpx.AsyncClient() as http:
+                    profile_resp = await http.get(
+                        "https://graph.microsoft.com/v1.0/me",
+                        headers={"Authorization": f"Bearer {data['access_token']}"},
+                    )
+                    profile_resp.raise_for_status()
+                    profile = profile_resp.json()
+            except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                _pending_setups[setup_id] = {
+                    "status": "failed",
+                    "error": f"Failed to fetch Microsoft profile: {e}",
+                    "_created_at": time.time(),
+                }
+                logger.error("Setup failed fetching profile: %s", e)
+                return
 
             email = profile.get("mail") or profile.get("userPrincipalName", "unknown")
             name = profile.get("displayName", email)
@@ -147,9 +179,10 @@ async def _complete_setup(
             }
             microsoft.save_token(email, token_data)
 
-            _pending_setups["latest"] = {
+            _pending_setups[setup_id] = {
                 "user": user,
                 "status": "complete",
+                "_created_at": time.time(),
             }
             logger.info("Setup complete for %s (%s)", name, email)
             return
@@ -160,31 +193,42 @@ async def _complete_setup(
         elif error == "slow_down":
             interval += 5
         else:
-            _pending_setups["latest"] = {
+            _pending_setups[setup_id] = {
                 "status": "failed",
                 "error": data.get("error_description", error),
+                "_created_at": time.time(),
             }
             logger.error("Setup failed: %s", data.get("error_description", error))
             return
 
-    _pending_setups["latest"] = {"status": "expired"}
+    _pending_setups[setup_id] = {"status": "expired", "_created_at": time.time()}
     logger.error("Setup timed out")
 
 
 @mcp.tool()
-async def asibot_setup_status() -> str:
+async def asibot_setup_status(setup_id: str = "") -> str:
     """Check if your account setup is complete. Call this after signing in via browser.
 
     Returns your API key and Claude Desktop config once sign-in is done.
+
+    Args:
+        setup_id: The setup ID returned by asibot_setup. If empty, checks the most recent setup.
     """
-    result = _pending_setups.get("latest")
+    if setup_id:
+        result = _pending_setups.get(setup_id)
+    elif _pending_setups:
+        # Fallback: use the most recent setup for single-user convenience
+        setup_id = next(reversed(_pending_setups))
+        result = _pending_setups[setup_id]
+    else:
+        result = None
 
     if not result:
         return "No setup in progress. Call asibot_setup first."
 
     if result["status"] == "complete":
         user = result["user"]
-        _pending_setups.pop("latest", None)
+        _pending_setups.pop(setup_id, None)
         return (
             f"Setup complete!\n\n"
             f"Name: {user['name']}\n"
@@ -198,11 +242,11 @@ async def asibot_setup_status() -> str:
 
     if result["status"] == "failed":
         error = result.get("error", "Unknown error")
-        _pending_setups.pop("latest", None)
+        _pending_setups.pop(setup_id, None)
         return f"Setup failed: {error}\n\nTry asibot_setup again."
 
     if result["status"] == "expired":
-        _pending_setups.pop("latest", None)
+        _pending_setups.pop(setup_id, None)
         return "Setup timed out. Try asibot_setup again."
 
     return "Still waiting for you to sign in via browser..."
@@ -218,6 +262,28 @@ async def asibot_whoami(ctx: Context) -> str:
     if user:
         return f"Authenticated as {user['name']} ({user['user_id']})"
     return f"Authenticated as {user_id}"
+
+
+@mcp.tool()
+async def asibot_rotate_key(ctx: Context) -> str:
+    """Generate a new API key. The old key stops working immediately.
+
+    After rotation, update your Claude Desktop config with the new key.
+    """
+    user_id, err = user_session.require_user(ctx)
+    if err:
+        return err
+    user = auth.rotate_key(user_id)
+    if not user:
+        return "Could not rotate key — user not found."
+    audit.log_tool_call(user_id, "asibot_rotate_key")
+    return (
+        f"API key rotated successfully.\n\n"
+        f"New API key: {user['api_key']}\n\n"
+        f"Update your Claude Desktop config:\n"
+        f"{_config_snippet(user['api_key'])}\n\n"
+        f"The old key no longer works. Restart Claude Desktop after updating."
+    )
 
 
 @mcp.tool()
@@ -247,6 +313,7 @@ async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
     fields = schema["fields"]
     labels = schema["labels"]
     instructions = "\n".join(f"  - {label}" for label in labels)
+    audit.log_tool_call(user_id, "asibot_connect", {"service": service})
     return (
         f"To connect {service}, I need these credentials:\n{instructions}\n\n"
         f"Please provide them by calling asibot_set_credentials with:\n"
@@ -277,11 +344,15 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
     except json.JSONDecodeError:
         return "Invalid JSON. Please provide credentials as a valid JSON string."
 
+    if not isinstance(creds, dict):
+        return "Credentials must be a JSON object, not an array or other type."
+
     missing = [f for f in schema["fields"] if not creds.get(f)]
     if missing:
         return f"Missing required fields: {', '.join(missing)}"
 
     token_store.set_credentials(user_id, service, creds)
+    audit.log_tool_call(user_id, "asibot_set_credentials", {"service": service})
     return f"Connected to {service} successfully. Your credentials are stored securely."
 
 
@@ -297,6 +368,7 @@ async def asibot_disconnect(service: str, ctx: Context) -> str:
         return err
 
     token_store.remove_credentials(user_id, service)
+    audit.log_tool_call(user_id, "asibot_disconnect", {"service": service})
     return f"Disconnected from {service}. Credentials removed."
 
 
@@ -386,19 +458,22 @@ async def asibot_set_mode(service: str, mode: str, ctx: Context) -> str:
     prefs = token_store.get_service_prefs(user_id, service)
     enabled = prefs.get("enabled", True)
     token_store.set_service_prefs(user_id, service, enabled=enabled, mode=mode)
+    audit.log_tool_call(user_id, "asibot_set_mode", {"service": service, "mode": mode})
     mode_desc = "read-only" if mode == "read" else "read + write"
     return f"{service} set to {mode_desc} mode."
 
 
 def _config_snippet(api_key: str) -> str:
     """Generate Claude Desktop config JSON for the user."""
+    scheme = "https" if settings.port == 443 else "http"
+    host = settings.host if settings.host != "0.0.0.0" else "localhost"
     config = {
         "mcpServers": {
             "asibot": {
                 "command": "npx",
                 "args": [
                     "mcp-remote",
-                    f"http://localhost:8080/mcp",
+                    f"{scheme}://{host}:{settings.port}/mcp",
                     "--header",
                     f"Authorization:Bearer {api_key}",
                 ],
@@ -406,80 +481,6 @@ def _config_snippet(api_key: str) -> str:
         }
     }
     return json.dumps(config, indent=2)
-
-
-# --- Core RAG Tools ---
-
-
-@mcp.tool()
-async def search_documents(query: str, top_k: int = 5) -> str:
-    """Search ingested documents for information relevant to the query.
-
-    Returns the most relevant text chunks with source citations.
-
-    Args:
-        query: The search query (natural language question or keywords)
-        top_k: Number of results to return (default: 5)
-    """
-    results = search.search_documents(query, top_k=top_k)
-
-    if not results:
-        return "No relevant documents found. The knowledge base may be empty — try ingesting some documents first."
-
-    output_parts = []
-    for i, hit in enumerate(results, 1):
-        output_parts.append(
-            f"--- Result {i} (score: {hit['score']}) ---\n"
-            f"Source: {hit['source_name']} ({hit['source']})\n"
-            f"Chunk {hit['chunk_index'] + 1}/{hit['total_chunks']}\n"
-            f"\n{hit['text']}\n"
-        )
-
-    return "\n".join(output_parts)
-
-
-@mcp.tool()
-async def ingest_file(file_path: str) -> str:
-    """Ingest a single file into the knowledge base.
-
-    Supported formats: PDF, DOCX, Markdown, plain text, CSV.
-    Re-ingesting the same file replaces previous chunks.
-
-    Args:
-        file_path: Absolute or relative path to the file
-    """
-    result = ingest.ingest_file(file_path)
-    return json.dumps(result, indent=2)
-
-
-@mcp.tool()
-async def ingest_directory(directory_path: str, pattern: str = "**/*") -> str:
-    """Ingest all supported files in a directory into the knowledge base.
-
-    Recursively finds and ingests PDF, DOCX, Markdown, text, and CSV files.
-
-    Args:
-        directory_path: Path to the directory
-        pattern: Glob pattern for file matching (default: all files recursively)
-    """
-    result = ingest.ingest_directory(directory_path, pattern=pattern)
-    return json.dumps(result, indent=2)
-
-
-@mcp.tool()
-async def list_sources() -> str:
-    """List all documents that have been ingested into the knowledge base."""
-    sources = search.list_sources()
-
-    if not sources:
-        return "No documents ingested yet. Use ingest_file or ingest_directory to add documents."
-
-    total_chunks = sum(s["chunk_count"] for s in sources)
-    lines = [f"Knowledge base: {len(sources)} sources, {total_chunks} total chunks\n"]
-    for s in sources:
-        lines.append(f"- {s['source_name']} ({s['chunk_count']} chunks) — {s['source']}")
-
-    return "\n".join(lines)
 
 
 # --- Connector Setup ---
@@ -504,7 +505,7 @@ def _setup_connectors() -> None:
                     and attr is not connectors_pkg.base.Connector):
                     connector = attr()
                     registry.register(connector)
-        except Exception as e:
+        except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load connector %s: %s", module_name, e)
 
     registry.register_all_tools(mcp)
@@ -513,13 +514,31 @@ def _setup_connectors() -> None:
 # --- Entry Point ---
 
 
+def _cleanup() -> None:
+    """Synchronous cleanup hook for atexit."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(microsoft.close_all_clients())
+        else:
+            loop.run_until_complete(microsoft.close_all_clients())
+    except RuntimeError:
+        pass
+
+
 def main() -> None:
     settings.ensure_dirs()
     _setup_connectors()
+    atexit.register(_cleanup)
     transport = settings.transport
     logger.info("Asibot MCP server starting (transport=%s, data_dir=%s)", transport, settings.data_dir)
     if transport == "streamable-http":
         logger.info("Listening on http://%s:%d/mcp", settings.host, settings.port)
+        if settings.port != 443:
+            logger.warning(
+                "Running HTTP transport without TLS. API keys are transmitted in plaintext. "
+                "Use a reverse proxy (nginx, Caddy) with TLS termination in production."
+            )
     mcp.run(transport=transport)
 
 

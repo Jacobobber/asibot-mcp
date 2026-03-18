@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://api.hubapi.com"
-
-
-def _make_client(creds):
-    if not creds.get("token"):
-        return None
-    return httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {creds['token']}"},
-        timeout=30.0,
-    )
 
 
 class HubSpotConnector(Connector):
@@ -44,7 +34,11 @@ class HubSpotConnector(Connector):
                 query: Search query
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "hubspot", _make_client, "read")
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "hubspot", level="read")
             if err:
                 return err
             body = {
@@ -52,8 +46,9 @@ class HubSpotConnector(Connector):
                 "limit": limit,
                 "properties": ["firstname", "lastname", "email", "company", "phone"],
             }
-            r = await client.post(f"{API}/crm/v3/objects/contacts/search", json=body)
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "POST", f"{API}/crm/v3/objects/contacts/search", service="HubSpot", action="search contacts", json=body)
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No contacts found."
@@ -74,7 +69,11 @@ class HubSpotConnector(Connector):
                 query: Search query
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "hubspot", _make_client, "read")
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "hubspot", level="read")
             if err:
                 return err
             body = {
@@ -82,8 +81,9 @@ class HubSpotConnector(Connector):
                 "limit": limit,
                 "properties": ["dealname", "dealstage", "amount", "closedate", "pipeline"],
             }
-            r = await client.post(f"{API}/crm/v3/objects/deals/search", json=body)
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "POST", f"{API}/crm/v3/objects/deals/search", service="HubSpot", action="search deals", json=body)
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No deals found."
@@ -104,14 +104,19 @@ class HubSpotConnector(Connector):
             Args:
                 contact_id: The contact ID
             """
-            client, uid, err = token_store.require_service(ctx, "hubspot", _make_client, "read")
+            err = validation.validate_id(contact_id, "contact_id")
             if err:
                 return err
-            r = await client.get(
-                f"{API}/crm/v3/objects/contacts/{contact_id}",
+            client, uid, err = token_store.require_service(ctx, "hubspot", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/crm/v3/objects/contacts/{contact_id}",
+                service="HubSpot", action="get contact",
                 params={"properties": "firstname,lastname,email,company,phone,jobtitle,lifecyclestage"},
             )
-            r.raise_for_status()
+            if err:
+                return err
             props = r.json().get("properties", {})
             name = f"{props.get('firstname', '')} {props.get('lastname', '')}".strip() or "Unknown"
             return (
@@ -130,14 +135,19 @@ class HubSpotConnector(Connector):
             Args:
                 deal_id: The deal ID
             """
-            client, uid, err = token_store.require_service(ctx, "hubspot", _make_client, "read")
+            err = validation.validate_id(deal_id, "deal_id")
             if err:
                 return err
-            r = await client.get(
-                f"{API}/crm/v3/objects/deals/{deal_id}",
+            client, uid, err = token_store.require_service(ctx, "hubspot", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/crm/v3/objects/deals/{deal_id}",
+                service="HubSpot", action="get deal",
                 params={"properties": "dealname,dealstage,amount,closedate,pipeline,hubspot_owner_id,description"},
             )
-            r.raise_for_status()
+            if err:
+                return err
             props = r.json().get("properties", {})
             return (
                 f"{props.get('dealname', 'Untitled')}\n"

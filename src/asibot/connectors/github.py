@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://api.github.com"
-
-
-def _make_client(creds):
-    if not creds.get("token"):
-        return None
-    return httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {creds['token']}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
-        timeout=30.0,
-    )
 
 
 class GitHubConnector(Connector):
@@ -44,13 +34,22 @@ class GitHubConnector(Connector):
                 query: Search query
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "github", _make_client, "read")
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
             q = f"{query} org:{org}" if org else query
-            r = await client.get(f"{API}/search/repositories", params={"q": q, "per_page": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/search/repositories",
+                service="GitHub", action="search repos",
+                params={"q": q, "per_page": min(limit, 100)},
+            )
+            if err:
+                return err
             items = r.json().get("items", [])
             if not items:
                 return "No repos found."
@@ -64,13 +63,22 @@ class GitHubConnector(Connector):
                 query: Code search query
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "github", _make_client, "read")
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
             q = f"{query} org:{org}" if org else query
-            r = await client.get(f"{API}/search/code", params={"q": q, "per_page": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/search/code",
+                service="GitHub", action="search code",
+                params={"q": q, "per_page": min(limit, 100)},
+            )
+            if err:
+                return err
             items = r.json().get("items", [])
             if not items:
                 return "No code matches found."
@@ -83,18 +91,24 @@ class GitHubConnector(Connector):
             Args:
                 limit: Max results (default: 30)
             """
-            client, uid, err = token_store.require_service(ctx, "github", _make_client, "read")
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
             if not org:
                 return "No GitHub org configured. Reconnect with an org name."
-            r = await client.get(f"{API}/orgs/{org}/repos", params={"per_page": limit, "sort": "updated"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/orgs/{org}/repos",
+                service="GitHub", action="list repos",
+                params={"per_page": min(limit, 100), "sort": "updated"},
+            )
+            if err:
+                return err
             repos = r.json()
             if not repos:
                 return "No repos found."
-            return "\n".join(f"{r['name']}  ({r.get('language', '?')}, updated {r.get('updated_at', '?')[:10]})" for r in repos)
+            return "\n".join(f"{repo['name']}  ({repo.get('language', '?')}, updated {repo.get('updated_at', '?')[:10]})" for repo in repos)
 
         @mcp.tool()
         async def github_list_issues(repo: str, ctx: Context, state: str = "open", limit: int = 20) -> str:
@@ -105,20 +119,29 @@ class GitHubConnector(Connector):
                 state: open, closed, or all (default: open)
                 limit: Max results (default: 20)
             """
-            client, uid, err = token_store.require_service(ctx, "github", _make_client, "read")
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
             full = repo if "/" in repo else f"{org}/{repo}"
-            r = await client.get(f"{API}/repos/{full}/issues", params={"state": state, "per_page": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{full}/issues",
+                service="GitHub", action="list issues",
+                params={"state": state, "per_page": min(limit, 100)},
+            )
+            if err:
+                return err
             issues = r.json()
             if not issues:
                 return f"No {state} issues found."
             lines = []
             for i in issues:
                 pr = " [PR]" if i.get("pull_request") else ""
-                labels = ", ".join(l["name"] for l in i.get("labels", []))
+                labels = ", ".join(lbl["name"] for lbl in i.get("labels", []))
                 lines.append(f"#{i['number']}{pr} {i.get('title', '?')}\n  State: {i.get('state', '?')} | Labels: {labels or 'none'}")
             return "\n\n".join(lines)
 
@@ -130,18 +153,27 @@ class GitHubConnector(Connector):
                 repo: Repo name
                 issue_number: Issue/PR number
             """
-            client, uid, err = token_store.require_service(ctx, "github", _make_client, "read")
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            client, uid, err = token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
             full = repo if "/" in repo else f"{org}/{repo}"
-            r = await client.get(f"{API}/repos/{full}/issues/{issue_number}")
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{full}/issues/{issue_number}",
+                service="GitHub", action="get issue",
+            )
+            if err:
+                return err
             i = r.json()
             output = f"#{i['number']}: {i.get('title', '?')}\nState: {i.get('state', '?')} | Author: {i.get('user', {}).get('login', '?')}\nCreated: {i.get('created_at', '?')}\n\n{i.get('body', 'No description')}\n"
-            r2 = await client.get(f"{API}/repos/{full}/issues/{issue_number}/comments")
-            r2.raise_for_status()
-            comments = r2.json()
+            r2, _ = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{full}/issues/{issue_number}/comments",
+                service="GitHub", action="get comments",
+            )
+            comments = r2.json() if r2 else []
             if comments:
                 output += f"\n--- {len(comments)} Comments ---\n"
                 for c in comments:
@@ -157,12 +189,23 @@ class GitHubConnector(Connector):
                 title: Issue title
                 body: Issue body (optional)
             """
-            client, uid, err = token_store.require_service(ctx, "github", _make_client, "write")
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            err = validation.validate_content(title, "title")
+            if err:
+                return err
+            client, uid, err = token_store.require_service(ctx, "github", level="write")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
             full = repo if "/" in repo else f"{org}/{repo}"
-            r = await client.post(f"{API}/repos/{full}/issues", json={"title": title, "body": body})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/repos/{full}/issues",
+                service="GitHub", action="create issue",
+                json={"title": title, "body": body},
+            )
+            if err:
+                return err
             i = r.json()
             return f"Created issue #{i['number']}: {i.get('title', '?')}\nURL: {i.get('html_url', '?')}"

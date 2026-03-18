@@ -29,7 +29,7 @@ async def connect_all() -> None:
         try:
             await connector.connect()
             logger.info("Connected: %s", name)
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             logger.exception("Failed to connect: %s", name)
 
 
@@ -38,7 +38,7 @@ async def disconnect_all() -> None:
         try:
             await connector.disconnect()
             logger.info("Disconnected: %s", name)
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             logger.exception("Failed to disconnect: %s", name)
 
 

@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://nla.zapier.com/api/v1"
-
-
-def _make_client(creds):
-    if not creds.get("api_key"):
-        return None
-    return httpx.AsyncClient(
-        headers={"X-API-Key": creds["api_key"]},
-        timeout=30.0,
-    )
 
 
 class ZapierConnector(Connector):
@@ -39,16 +29,17 @@ class ZapierConnector(Connector):
         @mcp.tool()
         async def zapier_list_actions(ctx: Context) -> str:
             """List all available Zapier NLA actions configured for your account."""
-            client, uid, err = token_store.require_service(ctx, "zapier", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "zapier", level="read")
             if err:
                 return err
-            r = await client.get(f"{API}/exposed/")
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{API}/exposed/", service="Zapier", action="list actions")
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No Zapier actions configured. Set up actions at https://nla.zapier.com/."
             return "\n\n".join(
-                f"{a.get('description', 'No description')}\n  ID: {a['id']} | App: {a.get('params', {}).get('app', '?')}"
+                f"{a.get('description', 'No description')}\n  ID: {a.get('id', '?')} | App: {a.get('params', {}).get('app', '?')}"
                 for a in results
             )
 
@@ -60,14 +51,18 @@ class ZapierConnector(Connector):
                 action_id: The action ID from zapier_list_actions
                 instructions: Natural language instructions for the action
             """
-            client, uid, err = token_store.require_service(ctx, "zapier", _make_client, "write")
+            err = validation.validate_id(action_id, "action_id")
             if err:
                 return err
-            r = await client.post(
-                f"{API}/exposed/{action_id}/execute/",
-                json={"instructions": instructions},
-            )
-            r.raise_for_status()
+            err = validation.validate_content(instructions, "instructions")
+            if err:
+                return err
+            client, uid, err = token_store.require_service(ctx, "zapier", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "POST", f"{API}/exposed/{action_id}/execute/", service="Zapier", action="run action", json={"instructions": instructions})
+            if err:
+                return err
             data = r.json()
             status = data.get("status", "unknown")
             result = data.get("result", {})

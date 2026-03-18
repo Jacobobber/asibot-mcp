@@ -1,34 +1,46 @@
 """Zoom connector: meetings and recordings via Zoom REST API."""
 
 import logging
+import time
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://api.zoom.us/v2"
 TOKEN_URL = "https://zoom.us/oauth/token"
 
-
-def _make_client(creds):
-    if not creds.get("account_id") or not creds.get("client_id") or not creds.get("client_secret"):
-        return None
-    return httpx.AsyncClient(timeout=30.0)
+# Token cache: account_id -> (token, expires_at)
+_token_cache: dict[str, tuple[str, float]] = {}
+_TOKEN_MARGIN = 300  # refresh 5 min before expiry
 
 
 async def _get_access_token(creds) -> str:
-    """Exchange Server-to-Server OAuth credentials for an access token."""
+    """Exchange Server-to-Server OAuth credentials for an access token (cached)."""
+    account_id = creds["account_id"]
+    cached = _token_cache.get(account_id)
+    if cached:
+        token, expires_at = cached
+        if time.time() < expires_at - _TOKEN_MARGIN:
+            return token
+
     async with httpx.AsyncClient(timeout=30.0) as c:
         r = await c.post(
             TOKEN_URL,
-            params={"grant_type": "account_credentials", "account_id": creds["account_id"]},
+            params={"grant_type": "account_credentials", "account_id": account_id},
             auth=(creds["client_id"], creds["client_secret"]),
         )
         r.raise_for_status()
-        return r.json()["access_token"]
+        data = r.json()
+        token = data.get("access_token")
+        if not token:
+            raise ValueError("Zoom OAuth response missing access_token")
+        expires_in = data.get("expires_in", 3600)
+        _token_cache[account_id] = (token, time.time() + expires_in)
+        return token
 
 
 class ZoomConnector(Connector):
@@ -53,17 +65,22 @@ class ZoomConnector(Connector):
             Args:
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "zoom", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "zoom", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "zoom")
-            token = await _get_access_token(creds)
-            r = await client.get(
-                f"{API}/users/me/meetings",
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/users/me/meetings",
+                service="Zoom", action="list meetings",
                 headers={"Authorization": f"Bearer {token}"},
                 params={"page_size": limit, "type": "upcoming"},
             )
-            r.raise_for_status()
+            if err:
+                return err
             meetings = r.json().get("meetings", [])
             if not meetings:
                 return "No upcoming meetings found."
@@ -79,16 +96,21 @@ class ZoomConnector(Connector):
             Args:
                 meeting_id: The Zoom meeting ID
             """
-            client, uid, err = token_store.require_service(ctx, "zoom", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "zoom", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "zoom")
-            token = await _get_access_token(creds)
-            r = await client.get(
-                f"{API}/meetings/{meeting_id}",
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/meetings/{meeting_id}",
+                service="Zoom", action="get meeting",
                 headers={"Authorization": f"Bearer {token}"},
             )
-            r.raise_for_status()
+            if err:
+                return err
             m = r.json()
             return (
                 f"{m.get('topic', 'Untitled')}\n"
@@ -108,22 +130,36 @@ class ZoomConnector(Connector):
                 to_date: End date (YYYY-MM-DD). Defaults to today.
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "zoom", _make_client, "read")
+            if from_date:
+                err = validation.validate_date(from_date, "from_date")
+                if err:
+                    return err
+            if to_date:
+                err = validation.validate_date(to_date, "to_date")
+                if err:
+                    return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "zoom", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "zoom")
-            token = await _get_access_token(creds)
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
             params: dict = {"page_size": limit}
             if from_date:
                 params["from"] = from_date
             if to_date:
                 params["to"] = to_date
-            r = await client.get(
-                f"{API}/users/me/recordings",
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/users/me/recordings",
+                service="Zoom", action="list recordings",
                 headers={"Authorization": f"Bearer {token}"},
                 params=params,
             )
-            r.raise_for_status()
+            if err:
+                return err
             meetings = r.json().get("meetings", [])
             if not meetings:
                 return "No recordings found."

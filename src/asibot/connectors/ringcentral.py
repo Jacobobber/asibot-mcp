@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://platform.ringcentral.com/restapi/v1.0"
-
-
-def _make_client(creds):
-    if not creds.get("token"):
-        return None
-    return httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {creds['token']}", "Accept": "application/json"},
-        timeout=30.0,
-    )
 
 
 class RingCentralConnector(Connector):
@@ -43,11 +33,13 @@ class RingCentralConnector(Connector):
             Args:
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "ringcentral", _make_client, "read")
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "ringcentral", level="read")
             if err:
                 return err
-            r = await client.get(f"{API}/account/~/call-log", params={"perPage": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{API}/account/~/call-log", service="RingCentral", action="call log", params={"perPage": limit})
+            if err:
+                return err
             records = r.json().get("records", [])
             if not records:
                 return "No call log entries found."
@@ -67,11 +59,13 @@ class RingCentralConnector(Connector):
             Args:
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "ringcentral", _make_client, "read")
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "ringcentral", level="read")
             if err:
                 return err
-            r = await client.get(f"{API}/account/~/extension/~/message-store", params={"perPage": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{API}/account/~/extension/~/message-store", service="RingCentral", action="messages", params={"perPage": limit})
+            if err:
+                return err
             records = r.json().get("records", [])
             if not records:
                 return "No messages found."

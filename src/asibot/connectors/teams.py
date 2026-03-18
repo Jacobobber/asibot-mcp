@@ -5,6 +5,7 @@ import re
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from asibot import token_store, validation
 from asibot.config import settings
 from asibot.connectors import microsoft
 from asibot.connectors.base import Connector
@@ -36,8 +37,9 @@ class TeamsConnector(Connector):
             client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
             if err:
                 return err
-            r = await client.get(f"{GRAPH}/me/joinedTeams")
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/joinedTeams", service="Teams", action="list teams")
+            if err:
+                return err
             teams = r.json().get("value", [])
             if not teams:
                 return "No teams found."
@@ -50,11 +52,15 @@ class TeamsConnector(Connector):
             Args:
                 team_id: The team ID
             """
+            err = validation.validate_id(team_id, "team_id")
+            if err:
+                return err
             client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
             if err:
                 return err
-            r = await client.get(f"{GRAPH}/teams/{team_id}/channels")
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/teams/{team_id}/channels", service="Teams", action="list channels")
+            if err:
+                return err
             channels = r.json().get("value", [])
             if not channels:
                 return "No channels found."
@@ -69,11 +75,19 @@ class TeamsConnector(Connector):
                 channel_id: The channel ID
                 limit: Number of messages (default: 20)
             """
+            err = validation.validate_id(team_id, "team_id")
+            if err:
+                return err
+            err = validation.validate_id(channel_id, "channel_id")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
             client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
             if err:
                 return err
-            r = await client.get(f"{GRAPH}/teams/{team_id}/channels/{channel_id}/messages", params={"$top": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/teams/{team_id}/channels/{channel_id}/messages", service="Teams", action="read messages", params={"$top": limit})
+            if err:
+                return err
             msgs = r.json().get("value", [])
             if not msgs:
                 return "No messages."
@@ -95,11 +109,16 @@ class TeamsConnector(Connector):
                 query: Search query
                 limit: Max results (default: 10)
             """
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
             client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
             if err:
                 return err
-            r = await client.post(f"{GRAPH}/search/query", json={"requests": [{"entityTypes": ["chatMessage"], "query": {"queryString": query}, "from": 0, "size": limit}]})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "POST", f"{GRAPH}/search/query", service="Teams", action="search messages", json={"requests": [{"entityTypes": ["chatMessage"], "query": {"queryString": query}, "from": 0, "size": limit}]})
+            if err:
+                return err
             hits = r.json().get("value", [{}])[0].get("hitsContainers", [{}])[0].get("hits", [])
             if not hits:
                 return "No messages found."
@@ -120,8 +139,9 @@ class TeamsConnector(Connector):
             client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
             if err:
                 return err
-            r = await client.get(f"{GRAPH}/me/chats", params={"$top": limit, "$orderby": "lastUpdatedDateTime desc", "$expand": "members"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/chats", service="Teams", action="recent chats", params={"$top": limit, "$orderby": "lastUpdatedDateTime desc", "$expand": "members"})
+            if err:
+                return err
             chats = r.json().get("value", [])
             if not chats:
                 return "No recent chats."

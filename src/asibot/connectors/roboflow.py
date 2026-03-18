@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://api.roboflow.com"
-
-
-def _make_client(creds):
-    if not creds.get("api_key"):
-        return None
-    return httpx.AsyncClient(
-        headers={"Accept": "application/json"},
-        timeout=30.0,
-    )
 
 
 class RoboflowConnector(Connector):
@@ -39,14 +29,19 @@ class RoboflowConnector(Connector):
         @mcp.tool()
         async def roboflow_list_projects(ctx: Context) -> str:
             """List all projects in your Roboflow workspace."""
-            client, uid, err = token_store.require_service(ctx, "roboflow", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "roboflow", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "roboflow")
             workspace = creds.get("workspace", "")
+            if workspace:
+                err = validation.validate_id(workspace, "workspace")
+                if err:
+                    return err
             url = f"{API}/{workspace}" if workspace else API
-            r = await client.get(url, params={"api_key": creds["api_key"]})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", url, service="Roboflow", action="list projects")
+            if err:
+                return err
             data = r.json()
             projects = data.get("workspace", {}).get("projects", data.get("projects", []))
             if not projects:
@@ -66,12 +61,15 @@ class RoboflowConnector(Connector):
             Args:
                 project_id: The project ID or URL slug
             """
-            client, uid, err = token_store.require_service(ctx, "roboflow", _make_client, "read")
+            err = validation.validate_id(project_id, "project_id")
             if err:
                 return err
-            creds = token_store.get_credentials(uid, "roboflow")
-            r = await client.get(f"{API}/{project_id}", params={"api_key": creds["api_key"]})
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "roboflow", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/{project_id}", service="Roboflow", action="get project")
+            if err:
+                return err
             p = r.json()
             name = p.get("name", "Untitled")
             proj_type = p.get("type", "?")

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from asibot import token_store, validation
 from asibot.config import settings
 from asibot.connectors import microsoft
 from asibot.connectors.base import Connector
@@ -39,11 +40,16 @@ class OutlookConnector(Connector):
                 query: Search query (subject, body, sender, etc.)
                 limit: Max results (default: 10)
             """
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
             client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "read")
             if err:
                 return err
-            r = await client.get(f"{GRAPH}/me/messages", params={"$search": f'"{query}"', "$top": limit, "$select": "subject,from,receivedDateTime,bodyPreview"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/messages", service="Outlook", action="search email", params={"$search": f'"{query}"', "$top": limit, "$select": "subject,from,receivedDateTime,bodyPreview"})
+            if err:
+                return err
             msgs = r.json().get("value", [])
             if not msgs:
                 return "No emails found."
@@ -60,11 +66,15 @@ class OutlookConnector(Connector):
             Args:
                 message_id: The email message ID (from search results)
             """
+            err = validation.validate_id(message_id, "message_id")
+            if err:
+                return err
             client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "read")
             if err:
                 return err
-            r = await client.get(f"{GRAPH}/me/messages/{message_id}", params={"$select": "subject,from,toRecipients,receivedDateTime,body"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/messages/{message_id}", service="Outlook", action="read email", params={"$select": "subject,from,toRecipients,receivedDateTime,body"})
+            if err:
+                return err
             m = r.json()
             sender = m.get("from", {}).get("emailAddress", {})
             to = ", ".join(r.get("emailAddress", {}).get("address", "?") for r in m.get("toRecipients", []))
@@ -83,15 +93,28 @@ class OutlookConnector(Connector):
                 subject: Email subject
                 body: Email body (plain text)
             """
+            err = validation.validate_email_address(to)
+            if err:
+                return err
+            err = validation.validate_content(subject, "subject")
+            if err:
+                return err
+            err = validation.validate_content(body, "body")
+            if err:
+                return err
             client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "write")
             if err:
                 return err
-            r = await client.post(f"{GRAPH}/me/sendMail", json={
-                "message": {"subject": subject, "body": {"contentType": "Text", "content": body}, "toRecipients": [{"emailAddress": {"address": to}}]},
-                "saveToSentItems": True,
-            })
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "POST", f"{GRAPH}/me/sendMail",
+                service="Outlook", action="send email",
+                json={"message": {"subject": subject, "body": {"contentType": "Text", "content": body}, "toRecipients": [{"emailAddress": {"address": to}}]}, "saveToSentItems": True},
+            )
+            if err:
+                return err
             return f'Email sent to {to}: "{subject}"'
+
+        _ALLOWED_FOLDERS = frozenset({"inbox", "sentitems", "drafts", "deleteditems", "junkemail", "archive"})
 
         @mcp.tool()
         async def outlook_recent_emails(ctx: Context, limit: int = 10, folder: str = "inbox") -> str:
@@ -99,13 +122,18 @@ class OutlookConnector(Connector):
 
             Args:
                 limit: Number of emails (default: 10)
-                folder: Folder — inbox, sentitems, drafts (default: inbox)
+                folder: Folder — inbox, sentitems, drafts, deleteditems, junkemail, archive (default: inbox)
             """
+            err = validation.validate_folder_name(folder, _ALLOWED_FOLDERS)
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
             client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "read")
             if err:
                 return err
-            r = await client.get(f"{GRAPH}/me/mailFolders/{folder}/messages", params={"$top": limit, "$orderby": "receivedDateTime desc", "$select": "subject,from,receivedDateTime,bodyPreview,isRead"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/mailFolders/{folder}/messages", service="Outlook", action="recent emails", params={"$top": limit, "$orderby": "receivedDateTime desc", "$select": "subject,from,receivedDateTime,bodyPreview,isRead"})
+            if err:
+                return err
             msgs = r.json().get("value", [])
             if not msgs:
                 return f"No emails in {folder}."
@@ -128,8 +156,9 @@ class OutlookConnector(Connector):
                 return err
             now = datetime.now(timezone.utc)
             end = now + timedelta(days=days)
-            r = await client.get(f"{GRAPH}/me/calendarView", params={"startDateTime": now.isoformat(), "endDateTime": end.isoformat(), "$top": 50, "$orderby": "start/dateTime", "$select": "subject,start,end,location,organizer,isAllDay"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/calendarView", service="Calendar", action="events", params={"startDateTime": now.isoformat(), "endDateTime": end.isoformat(), "$top": 50, "$orderby": "start/dateTime", "$select": "subject,start,end,location,organizer,isAllDay"})
+            if err:
+                return err
             events = r.json().get("value", [])
             if not events:
                 return f"No events in the next {days} days."

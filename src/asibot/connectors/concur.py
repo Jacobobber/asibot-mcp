@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://us.api.concursolutions.com/api/v3.0"
-
-
-def _make_client(creds):
-    if not creds.get("token"):
-        return None
-    return httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {creds['token']}", "Accept": "application/json"},
-        timeout=30.0,
-    )
 
 
 class ConcurConnector(Connector):
@@ -43,11 +33,12 @@ class ConcurConnector(Connector):
             Args:
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "concur", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "concur", level="read")
             if err:
                 return err
-            r = await client.get(f"{API}/expense/reports", params={"limit": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{API}/expense/reports", service="Concur", action="list reports", params={"limit": limit})
+            if err:
+                return err
             items = r.json().get("Items", [])
             if not items:
                 return "No expense reports found."
@@ -68,11 +59,15 @@ class ConcurConnector(Connector):
             Args:
                 report_id: The expense report ID
             """
-            client, uid, err = token_store.require_service(ctx, "concur", _make_client, "read")
+            err = validation.validate_id(report_id, "report_id")
             if err:
                 return err
-            r = await client.get(f"{API}/expense/reports/{report_id}")
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "concur", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/expense/reports/{report_id}", service="Concur", action="get report")
+            if err:
+                return err
             rpt = r.json()
             name = rpt.get("Name", "Untitled")
             status = rpt.get("Status", "?")

@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://api.linksquares.com/v1"
-
-
-def _make_client(creds):
-    if not creds.get("token"):
-        return None
-    return httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {creds['token']}", "Accept": "application/json"},
-        timeout=30.0,
-    )
 
 
 class LinkSquaresConnector(Connector):
@@ -43,11 +33,12 @@ class LinkSquaresConnector(Connector):
             Args:
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "linksquares", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "linksquares", level="read")
             if err:
                 return err
-            r = await client.get(f"{API}/contracts", params={"limit": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{API}/contracts", service="LinkSquares", action="list contracts", params={"limit": limit})
+            if err:
+                return err
             contracts = r.json().get("contracts", r.json().get("data", []))
             if not contracts:
                 return "No contracts found."
@@ -69,11 +60,16 @@ class LinkSquaresConnector(Connector):
                 query: Search query (contract title, counterparty, or keyword)
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "linksquares", _make_client, "read")
+            err = validation.validate_query(query, "query")
             if err:
                 return err
-            r = await client.get(f"{API}/contracts/search", params={"q": query, "limit": limit})
-            r.raise_for_status()
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "linksquares", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/contracts/search", service="LinkSquares", action="search", params={"q": query, "limit": limit})
+            if err:
+                return err
             results = r.json().get("contracts", r.json().get("data", []))
             if not results:
                 return "No matching contracts found."

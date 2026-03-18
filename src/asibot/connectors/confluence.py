@@ -6,7 +6,7 @@ import re
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
@@ -51,12 +51,21 @@ class ConfluenceConnector(Connector):
                 query: Search query (CQL or text)
                 limit: Max results (default: 10)
             """
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
             client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "read")
             if err:
                 return err
             cql = query if "=" in query else f'text ~ "{query}"'
-            r = await client.get("/content/search", params={"cql": cql, "limit": limit, "expand": "space"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", "/content/search",
+                service="Confluence", action="search",
+                params={"cql": cql, "limit": limit, "expand": "space"},
+            )
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No pages found."
@@ -73,11 +82,19 @@ class ConfluenceConnector(Connector):
             Args:
                 page_id: Page ID
             """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
             client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "read")
             if err:
                 return err
-            r = await client.get(f"/content/{page_id}", params={"expand": "body.storage,space,version"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", f"/content/{page_id}",
+                service="Confluence", action="read page",
+                params={"expand": "body.storage,space,version"},
+            )
+            if err:
+                return err
             page = r.json()
             title = page.get("title", "?")
             space = (page.get("space") or {}).get("name", "?")
@@ -100,8 +117,13 @@ class ConfluenceConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "read")
             if err:
                 return err
-            r = await client.get("/space", params={"limit": limit, "type": "global"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", "/space",
+                service="Confluence", action="list spaces",
+                params={"limit": limit, "type": "global"},
+            )
+            if err:
+                return err
             spaces = r.json().get("results", [])
             if not spaces:
                 return "No spaces found."

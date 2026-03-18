@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://api.figma.com"
-
-
-def _make_client(creds):
-    if not creds.get("token"):
-        return None
-    return httpx.AsyncClient(
-        headers={"X-Figma-Token": creds["token"]},
-        timeout=30.0,
-    )
 
 
 class FigmaConnector(Connector):
@@ -43,11 +33,15 @@ class FigmaConnector(Connector):
             Args:
                 team_id: The Figma team ID
             """
-            client, uid, err = token_store.require_service(ctx, "figma", _make_client, "read")
+            err = validation.validate_id(team_id, "team_id")
             if err:
                 return err
-            r = await client.get(f"{API}/v1/teams/{team_id}/projects")
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "figma", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/teams/{team_id}/projects", service="Figma", action="list projects")
+            if err:
+                return err
             projects = r.json().get("projects", [])
             if not projects:
                 return "No projects found."
@@ -60,11 +54,15 @@ class FigmaConnector(Connector):
             Args:
                 project_id: The Figma project ID
             """
-            client, uid, err = token_store.require_service(ctx, "figma", _make_client, "read")
+            err = validation.validate_id(project_id, "project_id")
             if err:
                 return err
-            r = await client.get(f"{API}/v1/projects/{project_id}/files")
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "figma", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/projects/{project_id}/files", service="Figma", action="list files")
+            if err:
+                return err
             files = r.json().get("files", [])
             if not files:
                 return "No files found."
@@ -81,11 +79,15 @@ class FigmaConnector(Connector):
             Args:
                 file_key: The Figma file key
             """
-            client, uid, err = token_store.require_service(ctx, "figma", _make_client, "read")
+            err = validation.validate_id(file_key, "file_key")
             if err:
                 return err
-            r = await client.get(f"{API}/v1/files/{file_key}", params={"depth": 1})
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "figma", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/files/{file_key}", service="Figma", action="get file", params={"depth": 1})
+            if err:
+                return err
             data = r.json()
             name = data.get("name", "Untitled")
             modified = data.get("lastModified", "?")
@@ -104,11 +106,15 @@ class FigmaConnector(Connector):
             Args:
                 file_key: The Figma file key
             """
-            client, uid, err = token_store.require_service(ctx, "figma", _make_client, "read")
+            err = validation.validate_id(file_key, "file_key")
             if err:
                 return err
-            r = await client.get(f"{API}/v1/files/{file_key}/comments")
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "figma", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/files/{file_key}/comments", service="Figma", action="get comments")
+            if err:
+                return err
             comments = r.json().get("comments", [])
             if not comments:
                 return "No comments on this file."

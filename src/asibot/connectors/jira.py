@@ -2,24 +2,12 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
-
-
-def _make_client(creds):
-    if not creds.get("email") or not creds.get("api_token") or not creds.get("domain"):
-        return None
-    return httpx.AsyncClient(
-        auth=(creds["email"], creds["api_token"]),
-        base_url=f"https://{creds['domain']}/rest/api/3",
-        headers={"Accept": "application/json"},
-        timeout=30.0,
-    )
 
 
 class JiraConnector(Connector):
@@ -45,11 +33,20 @@ class JiraConnector(Connector):
                 jql: JQL query string
                 limit: Max results (default: 20)
             """
-            client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "read")
+            err = validation.validate_query(jql, "jql")
             if err:
                 return err
-            r = await client.get("/search", params={"jql": jql, "maxResults": limit, "fields": "summary,status,assignee,priority,updated"})
-            r.raise_for_status()
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", "/search",
+                service="Jira", action="search",
+                params={"jql": jql, "maxResults": limit, "fields": "summary,status,assignee,priority,updated"},
+            )
+            if err:
+                return err
             issues = r.json().get("issues", [])
             if not issues:
                 return "No issues found."
@@ -69,11 +66,18 @@ class JiraConnector(Connector):
             Args:
                 issue_key: Issue key (e.g., "PROJ-123")
             """
-            client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "read")
+            err = validation.validate_issue_key(issue_key)
             if err:
                 return err
-            r = await client.get(f"/issue/{issue_key}")
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"/issue/{issue_key}",
+                service="Jira", action="get issue",
+            )
+            if err:
+                return err
             i = r.json()
             f = i.get("fields", {})
             assignee = (f.get("assignee") or {}).get("displayName", "Unassigned")
@@ -105,11 +109,17 @@ class JiraConnector(Connector):
             Args:
                 limit: Max results (default: 50)
             """
-            client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "read")
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
             if err:
                 return err
-            r = await client.get("/project/search", params={"maxResults": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", "/project/search",
+                service="Jira", action="list projects",
+                params={"maxResults": limit},
+            )
+            if err:
+                return err
             projects = r.json().get("values", [])
             if not projects:
                 return "No projects found."
@@ -122,11 +132,17 @@ class JiraConnector(Connector):
             Args:
                 limit: Max results (default: 20)
             """
-            client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "read")
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
             if err:
                 return err
-            r = await client.get("/search", params={"jql": "assignee=currentUser() ORDER BY updated DESC", "maxResults": limit, "fields": "summary,status,priority,updated"})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", "/search",
+                service="Jira", action="my issues",
+                params={"jql": "assignee=currentUser() ORDER BY updated DESC", "maxResults": limit, "fields": "summary,status,priority,updated"},
+            )
+            if err:
+                return err
             issues = r.json().get("issues", [])
             if not issues:
                 return "No issues assigned to you."
@@ -147,7 +163,13 @@ class JiraConnector(Connector):
                 summary: Issue summary/title
                 description: Issue description (optional)
             """
-            client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "write")
+            err = validation.validate_project_key(project_key)
+            if err:
+                return err
+            err = validation.validate_content(summary, "summary")
+            if err:
+                return err
+            client, uid, err = token_store.require_service(ctx, "atlassian", level="write")
             if err:
                 return err
             payload = {
@@ -163,8 +185,13 @@ class JiraConnector(Connector):
                     "version": 1,
                     "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
                 }
-            r = await client.post("/issue", json=payload)
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "POST", "/issue",
+                service="Jira", action="create issue",
+                json=payload,
+            )
+            if err:
+                return err
             i = r.json()
             return f"Created {i['key']}: {summary}\nURL: https://{token_store.get_credentials(uid, 'atlassian').get('domain', '')}/browse/{i['key']}"
 
@@ -176,7 +203,13 @@ class JiraConnector(Connector):
                 issue_key: Issue key (e.g., "PROJ-123")
                 comment: Comment text
             """
-            client, uid, err = token_store.require_service(ctx, "atlassian", _make_client, "write")
+            err = validation.validate_issue_key(issue_key)
+            if err:
+                return err
+            err = validation.validate_content(comment, "comment")
+            if err:
+                return err
+            client, uid, err = token_store.require_service(ctx, "atlassian", level="write")
             if err:
                 return err
             payload = {
@@ -186,6 +219,11 @@ class JiraConnector(Connector):
                     "content": [{"type": "paragraph", "content": [{"type": "text", "text": comment}]}],
                 }
             }
-            r = await client.post(f"/issue/{issue_key}/comment", json=payload)
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "POST", f"/issue/{issue_key}/comment",
+                service="Jira", action="add comment",
+                json=payload,
+            )
+            if err:
+                return err
             return f"Comment added to {issue_key}."

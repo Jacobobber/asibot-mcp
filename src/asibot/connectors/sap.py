@@ -2,22 +2,12 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
-
-
-def _make_client(creds):
-    if not creds.get("token") or not creds.get("base_url"):
-        return None
-    return httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {creds['token']}", "Accept": "application/json"},
-        timeout=30.0,
-    )
 
 
 class SAPConnector(Connector):
@@ -42,13 +32,23 @@ class SAPConnector(Connector):
             Args:
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "sap", _make_client, "read")
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "sap", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "sap")
-            base = creds["base_url"].rstrip("/")
-            r = await client.get(f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder", params={"$top": limit, "$format": "json"})
-            r.raise_for_status()
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            r, err = await token_store.safe_request(
+                client, "GET", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder",
+                service="SAP", action="list orders",
+                params={"$top": limit, "$format": "json"},
+            )
+            if err:
+                return err
             results = r.json().get("d", {}).get("results", [])
             if not results:
                 return "No sales orders found."
@@ -69,13 +69,26 @@ class SAPConnector(Connector):
             Args:
                 order_id: The sales order number
             """
-            client, uid, err = token_store.require_service(ctx, "sap", _make_client, "read")
+            err = validation.validate_id(order_id, "order_id")
+            if err:
+                return err
+            client, uid, err = token_store.require_service(ctx, "sap", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "sap")
-            base = creds["base_url"].rstrip("/")
-            r = await client.get(f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder('{order_id}')", params={"$format": "json"})
-            r.raise_for_status()
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            safe_order_id = order_id.replace("'", "''")
+            r, err = await token_store.safe_request(
+                client, "GET", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder('{safe_order_id}')",
+                service="SAP", action="get order",
+                params={"$format": "json"},
+            )
+            if err:
+                return err
             o = r.json().get("d", r.json())
             otype = o.get("SalesOrderType", "?")
             org = o.get("SalesOrganization", "?")
@@ -94,17 +107,28 @@ class SAPConnector(Connector):
                 query: Search query (customer name or order number)
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "sap", _make_client, "read")
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "sap", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "sap")
-            base = creds["base_url"].rstrip("/")
-            filter_expr = f"substringof('{query}', SoldToParty) or substringof('{query}', SalesOrder)"
-            r = await client.get(
-                f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder",
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            safe_query = query.replace("'", "''")
+            filter_expr = f"substringof('{safe_query}', SoldToParty) or substringof('{safe_query}', SalesOrder)"
+            r, err = await token_store.safe_request(
+                client, "GET", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder",
+                service="SAP", action="search",
                 params={"$filter": filter_expr, "$top": limit, "$format": "json"},
             )
-            r.raise_for_status()
+            if err:
+                return err
             results = r.json().get("d", {}).get("results", [])
             if not results:
                 return "No matching orders found."

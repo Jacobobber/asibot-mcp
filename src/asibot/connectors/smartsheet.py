@@ -2,23 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://api.smartsheet.com/2.0"
-
-
-def _make_client(creds):
-    if not creds.get("token"):
-        return None
-    return httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {creds['token']}"},
-        timeout=30.0,
-    )
 
 
 class SmartsheetConnector(Connector):
@@ -43,11 +33,12 @@ class SmartsheetConnector(Connector):
             Args:
                 limit: Max results (default: 50)
             """
-            client, uid, err = token_store.require_service(ctx, "smartsheet", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "smartsheet", level="read")
             if err:
                 return err
-            r = await client.get(f"{API}/sheets", params={"pageSize": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "GET", f"{API}/sheets", service="Smartsheet", action="list sheets", params={"pageSize": limit})
+            if err:
+                return err
             sheets = r.json().get("data", [])
             if not sheets:
                 return "No sheets found."
@@ -64,11 +55,15 @@ class SmartsheetConnector(Connector):
             Args:
                 sheet_id: The sheet ID
             """
-            client, uid, err = token_store.require_service(ctx, "smartsheet", _make_client, "read")
+            err = validation.validate_id(sheet_id, "sheet_id")
             if err:
                 return err
-            r = await client.get(f"{API}/sheets/{sheet_id}")
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "smartsheet", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/sheets/{sheet_id}", service="Smartsheet", action="get sheet")
+            if err:
+                return err
             data = r.json()
             name = data.get("name", "Untitled")
             columns = data.get("columns", [])
@@ -93,11 +88,15 @@ class SmartsheetConnector(Connector):
             Args:
                 query: Search query text
             """
-            client, uid, err = token_store.require_service(ctx, "smartsheet", _make_client, "read")
+            err = validation.validate_query(query, "query")
             if err:
                 return err
-            r = await client.get(f"{API}/search", params={"query": query})
-            r.raise_for_status()
+            client, uid, err = token_store.require_service(ctx, "smartsheet", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/search", service="Smartsheet", action="search", params={"query": query})
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No results found."

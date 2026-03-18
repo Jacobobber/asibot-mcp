@@ -2,28 +2,13 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
 API = "https://api.notion.com"
-
-
-def _make_client(creds):
-    if not creds.get("token"):
-        return None
-    return httpx.AsyncClient(
-        headers={
-            "Authorization": f"Bearer {creds['token']}",
-            "Notion-Version": "2022-06-28",
-            "Content-Type": "application/json",
-        },
-        base_url=API,
-        timeout=30.0,
-    )
 
 
 def _rich_text_to_str(rich_text_list: list) -> str:
@@ -44,7 +29,8 @@ def _block_to_text(block: dict) -> str:
     if btype.startswith("heading_"):
         text = _rich_text_to_str(data.get("rich_text", []))
         level = btype[-1]
-        return f"{'#' * int(level)} {text}"
+        hashes = "#" * int(level) if level.isdigit() else "#"
+        return f"{hashes} {text}"
 
     if btype == "to_do":
         text = _rich_text_to_str(data.get("rich_text", []))
@@ -82,11 +68,16 @@ class NotionConnector(Connector):
                 query: Search query
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "notion", _make_client, "read")
+            err = validation.validate_query(query, "query")
             if err:
                 return err
-            r = await client.post("/v1/search", json={"query": query, "page_size": limit})
-            r.raise_for_status()
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "notion", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "POST", "/v1/search", service="Notion", action="search", json={"query": query, "page_size": limit})
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No results found."
@@ -115,12 +106,16 @@ class NotionConnector(Connector):
             Args:
                 page_id: Page ID (UUID)
             """
-            client, uid, err = token_store.require_service(ctx, "notion", _make_client, "read")
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            client, uid, err = token_store.require_service(ctx, "notion", level="read")
             if err:
                 return err
             # Fetch page metadata
-            pr = await client.get(f"/v1/pages/{page_id}")
-            pr.raise_for_status()
+            pr, err = await token_store.safe_request(client, "GET", f"/v1/pages/{page_id}", service="Notion", action="read page")
+            if err:
+                return err
             page = pr.json()
             props = page.get("properties", {})
             title_prop = props.get("title") or props.get("Name") or {}
@@ -128,8 +123,9 @@ class NotionConnector(Connector):
             title = _rich_text_to_str(title_arr) if title_arr else "Untitled"
 
             # Fetch page blocks
-            br = await client.get(f"/v1/blocks/{page_id}/children", params={"page_size": 100})
-            br.raise_for_status()
+            br, block_err = await token_store.safe_request(client, "GET", f"/v1/blocks/{page_id}/children", service="Notion", action="read blocks", params={"page_size": 100})
+            if block_err:
+                return f"Title: {title}\n\n(could not load page blocks)"
             blocks = br.json().get("results", [])
             content_lines = [_block_to_text(b) for b in blocks]
             content = "\n".join(line for line in content_lines if line)
@@ -142,11 +138,12 @@ class NotionConnector(Connector):
             Args:
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "notion", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "notion", level="read")
             if err:
                 return err
-            r = await client.post("/v1/search", json={"filter": {"property": "object", "value": "database"}, "page_size": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(client, "POST", "/v1/search", service="Notion", action="list databases", json={"filter": {"property": "object", "value": "database"}, "page_size": limit})
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No databases found."
@@ -165,11 +162,16 @@ class NotionConnector(Connector):
                 database_id: Database ID (UUID)
                 limit: Max results (default: 20)
             """
-            client, uid, err = token_store.require_service(ctx, "notion", _make_client, "read")
+            err = validation.validate_id(database_id, "database_id")
             if err:
                 return err
-            r = await client.post(f"/v1/databases/{database_id}/query", json={"page_size": limit})
-            r.raise_for_status()
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "notion", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "POST", f"/v1/databases/{database_id}/query", service="Notion", action="query database", json={"page_size": limit})
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No entries found."

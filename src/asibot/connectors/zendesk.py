@@ -2,24 +2,12 @@
 
 import logging
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import token_store
+from asibot import token_store, validation
 from asibot.connectors.base import Connector
 
 logger = logging.getLogger(__name__)
-
-
-def _make_client(creds):
-    if not creds.get("email") or not creds.get("api_token") or not creds.get("subdomain"):
-        return None
-    return httpx.AsyncClient(
-        auth=(f"{creds['email']}/token", creds["api_token"]),
-        base_url=f"https://{creds['subdomain']}.zendesk.com/api/v2",
-        headers={"Accept": "application/json"},
-        timeout=30.0,
-    )
 
 
 class ZendeskConnector(Connector):
@@ -46,14 +34,23 @@ class ZendeskConnector(Connector):
                 status: Filter by status (open, pending, solved, closed) — optional
                 limit: Max results (default: 20)
             """
-            client, uid, err = token_store.require_service(ctx, "zendesk", _make_client, "read")
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "zendesk", level="read")
             if err:
                 return err
             q = f"type:ticket {query}"
             if status:
                 q += f" status:{status}"
-            r = await client.get("/search.json", params={"query": q, "per_page": limit})
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", "/search.json",
+                service="Zendesk", action="search tickets",
+                params={"query": q, "per_page": limit},
+            )
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No tickets found."
@@ -73,11 +70,15 @@ class ZendeskConnector(Connector):
             Args:
                 ticket_id: Ticket ID
             """
-            client, uid, err = token_store.require_service(ctx, "zendesk", _make_client, "read")
+            client, uid, err = token_store.require_service(ctx, "zendesk", level="read")
             if err:
                 return err
-            r = await client.get(f"/tickets/{ticket_id}.json")
-            r.raise_for_status()
+            r, err = await token_store.safe_request(
+                client, "GET", f"/tickets/{ticket_id}.json",
+                service="Zendesk", action="get ticket",
+            )
+            if err:
+                return err
             t = r.json().get("ticket", {})
             output = (
                 f"#{t.get('id', '?')}: {t.get('subject', '?')}\n"
@@ -87,8 +88,12 @@ class ZendeskConnector(Connector):
                 f"\n{t.get('description', 'No description')}\n"
             )
             # Fetch comments
-            cr = await client.get(f"/tickets/{ticket_id}/comments.json")
-            cr.raise_for_status()
+            cr, _ = await token_store.safe_request(
+                client, "GET", f"/tickets/{ticket_id}/comments.json",
+                service="Zendesk", action="get comments",
+            )
+            if cr is None:
+                return output
             comments = cr.json().get("comments", [])
             if len(comments) > 1:
                 output += f"\n--- {len(comments) - 1} Follow-up Comments ---\n"
@@ -104,11 +109,20 @@ class ZendeskConnector(Connector):
                 query: Search query
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "zendesk", _make_client, "read")
+            err = validation.validate_query(query, "query")
             if err:
                 return err
-            r = await client.get("/help_center/articles/search.json", params={"query": query, "per_page": limit})
-            r.raise_for_status()
+            limit = validation.validate_limit(limit)
+            client, uid, err = token_store.require_service(ctx, "zendesk", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", "/help_center/articles/search.json",
+                service="Zendesk", action="search articles",
+                params={"query": query, "per_page": limit},
+            )
+            if err:
+                return err
             results = r.json().get("results", [])
             if not results:
                 return "No articles found."
