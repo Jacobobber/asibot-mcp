@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
 
+    # Concurrency limits
+    max_concurrent_requests: int = 200  # Global cap on simultaneous tool calls
+    max_concurrent_per_user: int = 10  # Per-user concurrent tool call limit
+    max_concurrent_per_service: int = 50  # Per-external-service concurrent call limit
+    max_concurrent_setups: int = 100  # Max concurrent device-code polling tasks
+
     # Business defaults — admin sets once, users never need to provide these
     github_org: str = ""  # e.g., "mycompany"
     atlassian_domain: str = ""  # e.g., "mycompany.atlassian.net"
