@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_offset
 
 logger = logging.getLogger(__name__)
 API = "https://api.linksquares.com/v1"
@@ -36,10 +37,17 @@ class LinkSquaresConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "linksquares", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{API}/contracts", service="LinkSquares", action="list contracts", params={"limit": limit})
-            if err:
-                return err
-            contracts = r.json().get("contracts", r.json().get("data", []))
+            pages = paginate_offset(
+                client, f"{API}/contracts",
+                service="LinkSquares", action="list contracts",
+                params={},
+                results_key="contracts",
+                page_size_param="limit",
+                offset_param="offset",
+                offset_start=0,
+                page_size=min(limit, 100),
+            )
+            contracts = await collect(pages, limit)
             if not contracts:
                 return "No contracts found."
             lines = []
@@ -67,10 +75,17 @@ class LinkSquaresConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "linksquares", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{API}/contracts/search", service="LinkSquares", action="search", params={"q": query, "limit": limit})
-            if err:
-                return err
-            results = r.json().get("contracts", r.json().get("data", []))
+            pages = paginate_offset(
+                client, f"{API}/contracts/search",
+                service="LinkSquares", action="search",
+                params={"q": query},
+                results_key="contracts",
+                page_size_param="limit",
+                offset_param="offset",
+                offset_start=0,
+                page_size=min(limit, 100),
+            )
+            results = await collect(pages, limit)
             if not results:
                 return "No matching contracts found."
             lines = []

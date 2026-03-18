@@ -6,7 +6,10 @@ Per-user files at ~/.asibot/users/{user_id}/:
   microsoft_token.json — Microsoft OAuth (managed by microsoft.py, encrypted)
 """
 
+import asyncio
 import logging
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -464,6 +467,61 @@ def get_required_fields(service: str) -> tuple[list[str], list[str]]:
             labels.append(label_map.get(sf, sf))
 
     return fields, labels
+
+# --- S2S Token Cache (Server-to-Server OAuth) ---
+
+_S2S_TOKEN_CACHE_MAX = 64
+_S2S_TOKEN_MARGIN = 300  # refresh 5 min before expiry
+_s2s_token_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
+_s2s_token_locks: dict[str, asyncio.Lock] = {}
+
+
+async def get_s2s_token(
+    *,
+    cache_key: str,
+    token_url: str,
+    grant_data: dict,
+    auth: tuple[str, str],
+    service_name: str,
+    send_as_params: bool = False,
+) -> str:
+    """Exchange client credentials for a bearer token with per-key locking and LRU cache.
+
+    Args:
+        cache_key: Unique key for caching (e.g. "paylocity:client_id")
+        token_url: OAuth token endpoint URL
+        grant_data: POST body data (grant_type, scope, etc.)
+        auth: (client_id, client_secret) tuple for HTTP Basic auth
+        service_name: For error messages
+        send_as_params: If True, send grant_data as query params instead of POST body
+    """
+    lock = _s2s_token_locks.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        cached = _s2s_token_cache.get(cache_key)
+        if cached:
+            token, expires_at = cached
+            if time.time() < expires_at - _S2S_TOKEN_MARGIN:
+                _s2s_token_cache.move_to_end(cache_key)
+                return token
+
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            if send_as_params:
+                r = await c.post(token_url, params=grant_data, auth=auth)
+            else:
+                r = await c.post(token_url, data=grant_data, auth=auth)
+            r.raise_for_status()
+            data = r.json()
+            token = data.get("access_token")
+            if not token:
+                raise ValueError(f"{service_name} OAuth response missing access_token")
+            expires_in = data.get("expires_in", 3600)
+            _s2s_token_cache[cache_key] = (token, time.time() + expires_in)
+            _s2s_token_cache.move_to_end(cache_key)
+            # Evict oldest entries if cache is too large
+            while len(_s2s_token_cache) > _S2S_TOKEN_CACHE_MAX:
+                _s2s_token_cache.popitem(last=False)
+            return token
+
 
 # Microsoft services (auth handled by microsoft.py, not credentials.json)
 MICROSOFT_SERVICES = ["sharepoint", "outlook", "calendar", "teams"]

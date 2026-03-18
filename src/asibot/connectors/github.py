@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_offset
 
 logger = logging.getLogger(__name__)
 API = "https://api.github.com"
@@ -43,14 +44,18 @@ class GitHubConnector(Connector):
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
             q = f"{query} org:{org}" if org else query
-            r, err = await token_store.safe_request(
-                client, "GET", f"{API}/search/repositories",
+            pages = paginate_offset(
+                client, f"{API}/search/repositories",
                 service="GitHub", action="search repos",
-                params={"q": q, "per_page": min(limit, 100)},
+                params={"q": q},
+                results_key="items",
+                page_size_param="per_page",
+                offset_param="page",
+                offset_start=1,
+                offset_step=1,
+                page_size=min(limit, 100),
             )
-            if err:
-                return err
-            items = r.json().get("items", [])
+            items = await collect(pages, limit)
             if not items:
                 return "No repos found."
             return "\n\n".join(f"{i['full_name']}\n  {i.get('description', 'No description')}\n  Stars: {i.get('stargazers_count', 0)} | Updated: {i.get('updated_at', '?')[:10]}" for i in items)
@@ -72,14 +77,18 @@ class GitHubConnector(Connector):
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
             q = f"{query} org:{org}" if org else query
-            r, err = await token_store.safe_request(
-                client, "GET", f"{API}/search/code",
+            pages = paginate_offset(
+                client, f"{API}/search/code",
                 service="GitHub", action="search code",
-                params={"q": q, "per_page": min(limit, 100)},
+                params={"q": q},
+                results_key="items",
+                page_size_param="per_page",
+                offset_param="page",
+                offset_start=1,
+                offset_step=1,
+                page_size=min(limit, 100),
             )
-            if err:
-                return err
-            items = r.json().get("items", [])
+            items = await collect(pages, limit)
             if not items:
                 return "No code matches found."
             return "\n\n".join(f"{i['repository']['full_name']}/{i['path']}\n  URL: {i.get('html_url', '?')}" for i in items)
@@ -98,14 +107,18 @@ class GitHubConnector(Connector):
             org = token_store.get_credentials(uid, "github").get("org", "")
             if not org:
                 return "No GitHub org configured. Reconnect with an org name."
-            r, err = await token_store.safe_request(
-                client, "GET", f"{API}/orgs/{org}/repos",
+            pages = paginate_offset(
+                client, f"{API}/orgs/{org}/repos",
                 service="GitHub", action="list repos",
-                params={"per_page": min(limit, 100), "sort": "updated"},
+                params={"sort": "updated"},
+                results_key=None,
+                page_size_param="per_page",
+                offset_param="page",
+                offset_start=1,
+                offset_step=1,
+                page_size=min(limit, 100),
             )
-            if err:
-                return err
-            repos = r.json()
+            repos = await collect(pages, limit)
             if not repos:
                 return "No repos found."
             return "\n".join(f"{repo['name']}  ({repo.get('language', '?')}, updated {repo.get('updated_at', '?')[:10]})" for repo in repos)
@@ -128,14 +141,18 @@ class GitHubConnector(Connector):
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
             full = repo if "/" in repo else f"{org}/{repo}"
-            r, err = await token_store.safe_request(
-                client, "GET", f"{API}/repos/{full}/issues",
+            pages = paginate_offset(
+                client, f"{API}/repos/{full}/issues",
                 service="GitHub", action="list issues",
-                params={"state": state, "per_page": min(limit, 100)},
+                params={"state": state},
+                results_key=None,
+                page_size_param="per_page",
+                offset_param="page",
+                offset_start=1,
+                offset_step=1,
+                page_size=min(limit, 100),
             )
-            if err:
-                return err
-            issues = r.json()
+            issues = await collect(pages, limit)
             if not issues:
                 return f"No {state} issues found."
             lines = []

@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_odata
 
 logger = logging.getLogger(__name__)
 API = "https://us.api.concursolutions.com/api/v3.0"
@@ -36,10 +37,14 @@ class ConcurConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "concur", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{API}/expense/reports", service="Concur", action="list reports", params={"limit": limit})
-            if err:
-                return err
-            items = r.json().get("Items", [])
+            pages = paginate_odata(
+                client, f"{API}/expense/reports",
+                service="Concur", action="list reports",
+                params={"limit": min(limit, 100)},
+                results_key="Items",
+                next_link_key="NextPage",
+            )
+            items = await collect(pages, limit)
             if not items:
                 return "No expense reports found."
             lines = []

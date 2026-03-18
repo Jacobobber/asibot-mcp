@@ -8,6 +8,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_cursor
 
 logger = logging.getLogger(__name__)
 DRIVE_API = "https://www.googleapis.com/drive/v3"
@@ -44,14 +45,19 @@ class GoogleWorkspaceConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "google", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(
-                client, "GET", f"{DRIVE_API}/files",
+            pages = paginate_cursor(
+                client, f"{DRIVE_API}/files",
+                method="GET",
                 service="Google Drive", action="search",
-                params={"q": f"fullText contains '{query}'", "pageSize": limit, "fields": "files(id,name,mimeType,modifiedTime,webViewLink)"},
+                params={"q": f"fullText contains '{query}'", "fields": "files(id,name,mimeType,modifiedTime,webViewLink),nextPageToken"},
+                results_key="files",
+                cursor_response_key="nextPageToken",
+                cursor_request_key="pageToken",
+                cursor_in="params",
+                page_size_param="pageSize",
+                page_size=min(limit, 100),
             )
-            if err:
-                return err
-            files = r.json().get("files", [])
+            files = await collect(pages, limit)
             if not files:
                 return "No files found."
             return "\n\n".join(
@@ -75,14 +81,19 @@ class GoogleWorkspaceConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "google", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(
-                client, "GET", f"{DRIVE_API}/files",
+            pages = paginate_cursor(
+                client, f"{DRIVE_API}/files",
+                method="GET",
                 service="Google Drive", action="list files",
-                params={"q": f"'{folder_id}' in parents and trashed = false", "pageSize": limit, "fields": "files(id,name,mimeType,modifiedTime,size)", "orderBy": "modifiedTime desc"},
+                params={"q": f"'{folder_id}' in parents and trashed = false", "fields": "files(id,name,mimeType,modifiedTime,size),nextPageToken", "orderBy": "modifiedTime desc"},
+                results_key="files",
+                cursor_response_key="nextPageToken",
+                cursor_request_key="pageToken",
+                cursor_in="params",
+                page_size_param="pageSize",
+                page_size=min(limit, 100),
             )
-            if err:
-                return err
-            files = r.json().get("files", [])
+            files = await collect(pages, limit)
             if not files:
                 return "No files found in this folder."
             return "\n".join(
@@ -153,14 +164,19 @@ class GoogleWorkspaceConnector(Connector):
             now = datetime.now(timezone.utc)
             time_min = now.isoformat()
             time_max = (now + timedelta(days=days)).isoformat()
-            r, err = await token_store.safe_request(
-                client, "GET", f"{CALENDAR_API}/calendars/primary/events",
+            pages = paginate_cursor(
+                client, f"{CALENDAR_API}/calendars/primary/events",
+                method="GET",
                 service="Google Calendar", action="events",
-                params={"timeMin": time_min, "timeMax": time_max, "maxResults": limit, "singleEvents": True, "orderBy": "startTime"},
+                params={"timeMin": time_min, "timeMax": time_max, "singleEvents": True, "orderBy": "startTime"},
+                results_key="items",
+                cursor_response_key="nextPageToken",
+                cursor_request_key="pageToken",
+                cursor_in="params",
+                page_size_param="maxResults",
+                page_size=min(limit, 250),
             )
-            if err:
-                return err
-            events = r.json().get("items", [])
+            events = await collect(pages, limit)
             if not events:
                 return f"No events in the next {days} days."
             lines = []

@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_salesforce
 
 logger = logging.getLogger(__name__)
 
@@ -77,27 +78,20 @@ class SalesforceConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "salesforce", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(
-                client, "GET", "/query",
+            pages = paginate_salesforce(
+                client, "/query",
                 service="Salesforce", action="query",
                 params={"q": soql},
             )
-            if err:
-                return err
-            data = r.json()
-            records = data.get("records", [])
-            total = data.get("totalSize", 0)
-            done = data.get("done", True)
+            records = await collect(pages, 2000)
             if not records:
                 return "Query returned no records."
-            lines = [f"Total: {total} record(s) | Showing: {len(records)}\n"]
+            lines = [f"Total: {len(records)} record(s)\n"]
             for rec in records:
                 obj_type = rec.get("attributes", {}).get("type", "?")
                 fields = {k: v for k, v in rec.items() if k != "attributes"}
                 field_str = " | ".join(f"{k}: {v}" for k, v in fields.items())
                 lines.append(f"[{obj_type}] {field_str}")
-            if not done:
-                lines.append(f"\n(More records available — add LIMIT or narrow your query to see all {total})")
             return "\n".join(lines)
 
         @mcp.tool()

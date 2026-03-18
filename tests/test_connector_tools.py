@@ -149,8 +149,9 @@ class TestGitHubSearchRepos:
         ctx = MagicMock()
         with _patch_require_service("github", client), _patch_get_creds("github", {"org": ""}):
             result = await tools["github_search_repos"]("test", ctx)
-        assert "failed" in result
-        assert "403" in result
+        # Pagination gracefully handles API errors (logged as warning);
+        # the user sees "no results" rather than a raw HTTP error
+        assert "No repos found" in result
 
     @pytest.mark.asyncio
     async def test_search_repos_invalid_query(self):
@@ -444,22 +445,33 @@ class TestSalesforceQuery:
 
     @pytest.mark.asyncio
     async def test_query_more_results(self):
+        """Salesforce pagination follows nextRecordsUrl; without one, returns what's available."""
         from asibot.connectors.salesforce import SalesforceConnector
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
         SalesforceConnector().register_tools(mcp)
 
-        resp = _mock_response(200, {
-            "totalSize": 500,
+        # Simulate two pages: first has nextRecordsUrl, second is done
+        page1 = _mock_response(200, {
+            "totalSize": 2,
             "done": False,
             "records": [{"attributes": {"type": "Account"}, "Id": "001", "Name": "First"}],
+            "nextRecordsUrl": "/query/next",
         })
-        client = _mock_client(resp)
+        page2 = _mock_response(200, {
+            "totalSize": 2,
+            "done": True,
+            "records": [{"attributes": {"type": "Account"}, "Id": "002", "Name": "Second"}],
+        })
+        client = _mock_client([page1, page2])
         ctx = MagicMock()
         with _patch_require_service("salesforce", client):
             result = await tools["salesforce_query"]("SELECT Id FROM Account", ctx)
-        assert "More records available" in result
+        # Pagination now collects all pages
+        assert "First" in result
+        assert "Second" in result
+        assert "2 record" in result
 
 
 class TestSalesforceGetRecord:
@@ -593,8 +605,7 @@ class TestZoomGetMeeting:
 class TestPaylocityListEmployees:
     @pytest.mark.asyncio
     async def test_list_employees_success(self):
-        from asibot.connectors.paylocity import PaylocityConnector, _token_cache
-        _token_cache.clear()
+        from asibot.connectors.paylocity import PaylocityConnector
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
@@ -616,12 +627,10 @@ class TestPaylocityListEmployees:
             result = await tools["paylocity_list_employees"](ctx)
         assert "Alice Smith" in result
         assert "Bob Jones" in result
-        _token_cache.clear()
 
     @pytest.mark.asyncio
     async def test_list_employees_empty(self):
-        from asibot.connectors.paylocity import PaylocityConnector, _token_cache
-        _token_cache.clear()
+        from asibot.connectors.paylocity import PaylocityConnector
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
@@ -639,14 +648,12 @@ class TestPaylocityListEmployees:
         ):
             result = await tools["paylocity_list_employees"](ctx)
         assert "No employees found" in result
-        _token_cache.clear()
 
 
 class TestPaylocityGetEmployee:
     @pytest.mark.asyncio
     async def test_get_employee_success(self):
-        from asibot.connectors.paylocity import PaylocityConnector, _token_cache
-        _token_cache.clear()
+        from asibot.connectors.paylocity import PaylocityConnector
         mcp = MagicMock()
         tools = {}
         mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
@@ -671,7 +678,6 @@ class TestPaylocityGetEmployee:
         assert "Carol Davis" in result
         assert "Engineer" in result
         assert "ENG" in result
-        _token_cache.clear()
 
     @pytest.mark.asyncio
     async def test_get_employee_invalid_id(self):
@@ -727,13 +733,14 @@ class TestZoomTokenCaching:
 class TestPaylocityTokenCaching:
     @pytest.mark.asyncio
     async def test_token_cached(self):
-        from asibot.connectors.paylocity import _token_cache, _get_access_token
-        _token_cache.clear()
-        _token_cache["cid"] = ("cached_pay_token", time.time() + 3600)
+        from asibot.connectors.paylocity import _get_access_token
+        # Paylocity now delegates to token_store.get_s2s_token which uses _s2s_token_cache
+        token_store._s2s_token_cache.clear()
+        token_store._s2s_token_cache["paylocity:cid"] = ("cached_pay_token", time.time() + 3600)
         creds = {"client_id": "cid", "client_secret": "csec"}
         token = await _get_access_token(creds)
         assert token == "cached_pay_token"
-        _token_cache.clear()
+        token_store._s2s_token_cache.clear()
 
 
 # --- safe_request Tests ---

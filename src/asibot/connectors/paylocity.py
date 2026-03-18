@@ -1,46 +1,28 @@
 """Paylocity connector: employee data via Paylocity REST API."""
 
 import logging
-import time
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_offset
 
 logger = logging.getLogger(__name__)
 API = "https://api.paylocity.com/api/v2"
 TOKEN_URL = "https://api.paylocity.com/IdentityServer/connect/token"
 
-# Token cache: client_id -> (token, expires_at)
-_token_cache: dict[str, tuple[str, float]] = {}
-_TOKEN_MARGIN = 300  # refresh 5 min before expiry
 
-
-async def _get_access_token(creds) -> str:
-    """Exchange client credentials for a bearer token (cached)."""
-    client_id = creds["client_id"]
-    cached = _token_cache.get(client_id)
-    if cached:
-        token, expires_at = cached
-        if time.time() < expires_at - _TOKEN_MARGIN:
-            return token
-
-    async with httpx.AsyncClient(timeout=30.0) as c:
-        r = await c.post(
-            TOKEN_URL,
-            data={"grant_type": "client_credentials", "scope": "WebLinkAPI"},
-            auth=(client_id, creds["client_secret"]),
-        )
-        r.raise_for_status()
-        data = r.json()
-        token = data.get("access_token")
-        if not token:
-            raise ValueError("Paylocity OAuth response missing access_token")
-        expires_in = data.get("expires_in", 3600)
-        _token_cache[client_id] = (token, time.time() + expires_in)
-        return token
+async def _get_access_token(creds: dict) -> str:
+    """Exchange client credentials for a bearer token (cached, locked)."""
+    return await token_store.get_s2s_token(
+        cache_key=f"paylocity:{creds['client_id']}",
+        token_url=TOKEN_URL,
+        grant_data={"grant_type": "client_credentials", "scope": "WebLinkAPI"},
+        auth=(creds["client_id"], creds["client_secret"]),
+        service_name="Paylocity",
+    )
 
 
 class PaylocityConnector(Connector):
@@ -74,19 +56,23 @@ class PaylocityConnector(Connector):
             except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
                 return token_store.format_api_error("Paylocity", "authenticate", e)
             company_id = creds["company_id"]
-            r, err = await token_store.safe_request(
-                client, "GET", f"{API}/companies/{company_id}/employees",
+            pages = paginate_offset(
+                client, f"{API}/companies/{company_id}/employees",
                 service="Paylocity", action="list employees",
+                params={},
+                results_key=None,
+                page_size_param="pagesize",
+                offset_param="pagenumber",
+                offset_start=1,
+                offset_step=1,
+                page_size=min(limit, 100),
                 headers={"Authorization": f"Bearer {token}"},
-                params={"pagesize": limit},
             )
-            if err:
-                return err
-            employees = r.json()
+            employees = await collect(pages, limit)
             if not employees:
                 return "No employees found."
             lines = []
-            for emp in employees[:limit]:
+            for emp in employees:
                 eid = emp.get("employeeId", "?")
                 first = emp.get("firstName", "")
                 last = emp.get("lastName", "")

@@ -227,7 +227,7 @@ class TestConnectorDiscovery:
     def test_all_connectors_importable(self):
         import asibot.connectors as connectors_pkg
 
-        skip = {"__init__", "base", "registry", "microsoft"}
+        skip = {"__init__", "base", "registry", "microsoft", "pagination"}
         for _, module_name, _ in pkgutil.iter_modules(connectors_pkg.__path__):
             if module_name in skip:
                 continue

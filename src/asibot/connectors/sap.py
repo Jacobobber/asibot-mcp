@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_odata
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +43,14 @@ class SAPConnector(Connector):
             if url_err:
                 return url_err
             base = base.rstrip("/")
-            r, err = await token_store.safe_request(
-                client, "GET", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder",
+            pages = paginate_odata(
+                client, f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder",
                 service="SAP", action="list orders",
-                params={"$top": limit, "$format": "json"},
+                params={"$top": min(limit, 100), "$format": "json"},
+                results_key="d.results",
+                next_link_key="d.__next",
             )
-            if err:
-                return err
-            results = r.json().get("d", {}).get("results", [])
+            results = await collect(pages, limit)
             if not results:
                 return "No sales orders found."
             lines = []
@@ -122,14 +123,14 @@ class SAPConnector(Connector):
             base = base.rstrip("/")
             safe_query = query.replace("'", "''")
             filter_expr = f"substringof('{safe_query}', SoldToParty) or substringof('{safe_query}', SalesOrder)"
-            r, err = await token_store.safe_request(
-                client, "GET", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder",
+            pages = paginate_odata(
+                client, f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder",
                 service="SAP", action="search",
-                params={"$filter": filter_expr, "$top": limit, "$format": "json"},
+                params={"$filter": filter_expr, "$top": min(limit, 100), "$format": "json"},
+                results_key="d.results",
+                next_link_key="d.__next",
             )
-            if err:
-                return err
-            results = r.json().get("d", {}).get("results", [])
+            results = await collect(pages, limit)
             if not results:
                 return "No matching orders found."
             lines = []

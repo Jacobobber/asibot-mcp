@@ -9,6 +9,7 @@ from asibot import token_store, validation
 from asibot.config import settings
 from asibot.connectors import microsoft
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_odata
 
 logger = logging.getLogger(__name__)
 GRAPH = microsoft.GRAPH_BASE
@@ -37,10 +38,11 @@ class TeamsConnector(Connector):
             client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/joinedTeams", service="Teams", action="list teams")
-            if err:
-                return err
-            teams = r.json().get("value", [])
+            pages = paginate_odata(
+                client, f"{GRAPH}/me/joinedTeams",
+                service="Teams", action="list teams",
+            )
+            teams = await collect(pages, 200)
             if not teams:
                 return "No teams found."
             return "\n\n".join(f"{t.get('displayName', '?')}\n  ID: {t.get('id', '')}\n  Description: {t.get('description', 'None')}" for t in teams)
@@ -58,10 +60,11 @@ class TeamsConnector(Connector):
             client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/teams/{team_id}/channels", service="Teams", action="list channels")
-            if err:
-                return err
-            channels = r.json().get("value", [])
+            pages = paginate_odata(
+                client, f"{GRAPH}/teams/{team_id}/channels",
+                service="Teams", action="list channels",
+            )
+            channels = await collect(pages, 200)
             if not channels:
                 return "No channels found."
             return "\n".join(f"#{ch.get('displayName', '?')}  ID: {ch.get('id', '')}" for ch in channels)
@@ -85,10 +88,12 @@ class TeamsConnector(Connector):
             client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/teams/{team_id}/channels/{channel_id}/messages", service="Teams", action="read messages", params={"$top": limit})
-            if err:
-                return err
-            msgs = r.json().get("value", [])
+            pages = paginate_odata(
+                client, f"{GRAPH}/teams/{team_id}/channels/{channel_id}/messages",
+                service="Teams", action="read messages",
+                params={"$top": min(limit, 50)},
+            )
+            msgs = await collect(pages, limit)
             if not msgs:
                 return "No messages."
             lines = []
@@ -139,10 +144,12 @@ class TeamsConnector(Connector):
             client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{GRAPH}/me/chats", service="Teams", action="recent chats", params={"$top": limit, "$orderby": "lastUpdatedDateTime desc", "$expand": "members"})
-            if err:
-                return err
-            chats = r.json().get("value", [])
+            pages = paginate_odata(
+                client, f"{GRAPH}/me/chats",
+                service="Teams", action="recent chats",
+                params={"$top": min(limit, 50), "$orderby": "lastUpdatedDateTime desc", "$expand": "members"},
+            )
+            chats = await collect(pages, limit)
             if not chats:
                 return "No recent chats."
             lines = []

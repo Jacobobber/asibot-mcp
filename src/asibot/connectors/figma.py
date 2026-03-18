@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_cursor
 
 logger = logging.getLogger(__name__)
 API = "https://api.figma.com"
@@ -112,10 +113,18 @@ class FigmaConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "figma", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/files/{file_key}/comments", service="Figma", action="get comments")
-            if err:
-                return err
-            comments = r.json().get("comments", [])
+            pages = paginate_cursor(
+                client, f"{API}/v1/files/{file_key}/comments",
+                method="GET",
+                service="Figma", action="get comments",
+                results_key="comments",
+                cursor_response_key="pagination.cursor",
+                cursor_request_key="cursor",
+                cursor_in="params",
+                page_size_param="page_size",
+                page_size=100,
+            )
+            comments = await collect(pages, 200)
             if not comments:
                 return "No comments on this file."
             lines = []

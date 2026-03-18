@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_cursor
 
 logger = logging.getLogger(__name__)
 API = "https://api.notion.com"
@@ -75,10 +76,19 @@ class NotionConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "notion", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "POST", "/v1/search", service="Notion", action="search", json={"query": query, "page_size": limit})
-            if err:
-                return err
-            results = r.json().get("results", [])
+            pages = paginate_cursor(
+                client, "/v1/search",
+                service="Notion", action="search",
+                json_body={"query": query},
+                results_key="results",
+                cursor_response_key="next_cursor",
+                cursor_request_key="start_cursor",
+                cursor_in="json",
+                page_size_param="page_size",
+                page_size=min(limit, 100),
+                has_more_key="has_more",
+            )
+            results = await collect(pages, limit)
             if not results:
                 return "No results found."
             lines = []
@@ -141,10 +151,19 @@ class NotionConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "notion", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "POST", "/v1/search", service="Notion", action="list databases", json={"filter": {"property": "object", "value": "database"}, "page_size": limit})
-            if err:
-                return err
-            results = r.json().get("results", [])
+            pages = paginate_cursor(
+                client, "/v1/search",
+                service="Notion", action="list databases",
+                json_body={"filter": {"property": "object", "value": "database"}},
+                results_key="results",
+                cursor_response_key="next_cursor",
+                cursor_request_key="start_cursor",
+                cursor_in="json",
+                page_size_param="page_size",
+                page_size=min(limit, 100),
+                has_more_key="has_more",
+            )
+            results = await collect(pages, limit)
             if not results:
                 return "No databases found."
             lines = []
@@ -169,10 +188,19 @@ class NotionConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "notion", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "POST", f"/v1/databases/{database_id}/query", service="Notion", action="query database", json={"page_size": limit})
-            if err:
-                return err
-            results = r.json().get("results", [])
+            pages = paginate_cursor(
+                client, f"/v1/databases/{database_id}/query",
+                service="Notion", action="query database",
+                json_body={},
+                results_key="results",
+                cursor_response_key="next_cursor",
+                cursor_request_key="start_cursor",
+                cursor_in="json",
+                page_size_param="page_size",
+                page_size=min(limit, 100),
+                has_more_key="has_more",
+            )
+            results = await collect(pages, limit)
             if not results:
                 return "No entries found."
             lines = []

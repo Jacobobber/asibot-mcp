@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_offset
 
 logger = logging.getLogger(__name__)
 API = "https://api.smartsheet.com/2.0"
@@ -36,10 +37,18 @@ class SmartsheetConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "smartsheet", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{API}/sheets", service="Smartsheet", action="list sheets", params={"pageSize": limit})
-            if err:
-                return err
-            sheets = r.json().get("data", [])
+            pages = paginate_offset(
+                client, f"{API}/sheets",
+                service="Smartsheet", action="list sheets",
+                params={},
+                results_key="data",
+                page_size_param="pageSize",
+                offset_param="page",
+                offset_start=1,
+                offset_step=1,
+                page_size=min(limit, 100),
+            )
+            sheets = await collect(pages, limit)
             if not sheets:
                 return "No sheets found."
             lines = []

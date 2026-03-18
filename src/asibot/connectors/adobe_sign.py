@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_cursor
 
 logger = logging.getLogger(__name__)
 API = "https://api.na1.adobesign.com/api/rest/v6"
@@ -36,10 +37,18 @@ class AdobeSignConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "adobe_sign", level="read")
             if err:
                 return err
-            r, err = await token_store.safe_request(client, "GET", f"{API}/agreements", service="Adobe Sign", action="list agreements", params={"pageSize": limit})
-            if err:
-                return err
-            agreements = r.json().get("userAgreementList", [])
+            pages = paginate_cursor(
+                client, f"{API}/agreements",
+                method="GET",
+                service="Adobe Sign", action="list agreements",
+                results_key="userAgreementList",
+                cursor_response_key="page.nextCursor",
+                cursor_request_key="cursor",
+                cursor_in="params",
+                page_size_param="pageSize",
+                page_size=min(limit, 100),
+            )
+            agreements = await collect(pages, limit)
             if not agreements:
                 return "No agreements found."
             return "\n\n".join(

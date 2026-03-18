@@ -9,6 +9,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_cursor
 
 logger = logging.getLogger(__name__)
 API = "https://api.zoom.us/v2"
@@ -79,15 +80,20 @@ class ZoomConnector(Connector):
                 token = await _get_access_token(creds)
             except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
                 return token_store.format_api_error("Zoom", "authenticate", e)
-            r, err = await token_store.safe_request(
-                client, "GET", f"{API}/users/me/meetings",
+            pages = paginate_cursor(
+                client, f"{API}/users/me/meetings",
+                method="GET",
                 service="Zoom", action="list meetings",
+                params={"type": "upcoming"},
+                results_key="meetings",
+                cursor_response_key="next_page_token",
+                cursor_request_key="next_page_token",
+                cursor_in="params",
+                page_size_param="page_size",
+                page_size=min(limit, 100),
                 headers={"Authorization": f"Bearer {token}"},
-                params={"page_size": limit, "type": "upcoming"},
             )
-            if err:
-                return err
-            meetings = r.json().get("meetings", [])
+            meetings = await collect(pages, limit)
             if not meetings:
                 return "No upcoming meetings found."
             return "\n\n".join(
@@ -153,20 +159,25 @@ class ZoomConnector(Connector):
                 token = await _get_access_token(creds)
             except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
                 return token_store.format_api_error("Zoom", "authenticate", e)
-            params: dict = {"page_size": limit}
+            rec_params: dict = {}
             if from_date:
-                params["from"] = from_date
+                rec_params["from"] = from_date
             if to_date:
-                params["to"] = to_date
-            r, err = await token_store.safe_request(
-                client, "GET", f"{API}/users/me/recordings",
+                rec_params["to"] = to_date
+            pages = paginate_cursor(
+                client, f"{API}/users/me/recordings",
+                method="GET",
                 service="Zoom", action="list recordings",
+                params=rec_params,
+                results_key="meetings",
+                cursor_response_key="next_page_token",
+                cursor_request_key="next_page_token",
+                cursor_in="params",
+                page_size_param="page_size",
+                page_size=min(limit, 100),
                 headers={"Authorization": f"Bearer {token}"},
-                params=params,
             )
-            if err:
-                return err
-            meetings = r.json().get("meetings", [])
+            meetings = await collect(pages, limit)
             if not meetings:
                 return "No recordings found."
             lines = []

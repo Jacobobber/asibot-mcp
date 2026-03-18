@@ -6,6 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import token_store, validation
 from asibot.connectors.base import Connector
+from asibot.connectors.pagination import collect, paginate_cursor
 
 logger = logging.getLogger(__name__)
 API = "https://api.hubapi.com"
@@ -41,15 +42,21 @@ class HubSpotConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "hubspot", level="read")
             if err:
                 return err
-            body = {
-                "query": query,
-                "limit": limit,
-                "properties": ["firstname", "lastname", "email", "company", "phone"],
-            }
-            r, err = await token_store.safe_request(client, "POST", f"{API}/crm/v3/objects/contacts/search", service="HubSpot", action="search contacts", json=body)
-            if err:
-                return err
-            results = r.json().get("results", [])
+            pages = paginate_cursor(
+                client, f"{API}/crm/v3/objects/contacts/search",
+                service="HubSpot", action="search contacts",
+                json_body={
+                    "query": query,
+                    "properties": ["firstname", "lastname", "email", "company", "phone"],
+                },
+                results_key="results",
+                cursor_response_key="paging.next.after",
+                cursor_request_key="after",
+                cursor_in="json",
+                page_size_param="limit",
+                page_size=min(limit, 100),
+            )
+            results = await collect(pages, limit)
             if not results:
                 return "No contacts found."
             lines = []
@@ -76,15 +83,21 @@ class HubSpotConnector(Connector):
             client, uid, err = token_store.require_service(ctx, "hubspot", level="read")
             if err:
                 return err
-            body = {
-                "query": query,
-                "limit": limit,
-                "properties": ["dealname", "dealstage", "amount", "closedate", "pipeline"],
-            }
-            r, err = await token_store.safe_request(client, "POST", f"{API}/crm/v3/objects/deals/search", service="HubSpot", action="search deals", json=body)
-            if err:
-                return err
-            results = r.json().get("results", [])
+            pages = paginate_cursor(
+                client, f"{API}/crm/v3/objects/deals/search",
+                service="HubSpot", action="search deals",
+                json_body={
+                    "query": query,
+                    "properties": ["dealname", "dealstage", "amount", "closedate", "pipeline"],
+                },
+                results_key="results",
+                cursor_response_key="paging.next.after",
+                cursor_request_key="after",
+                cursor_in="json",
+                page_size_param="limit",
+                page_size=min(limit, 100),
+            )
+            results = await collect(pages, limit)
             if not results:
                 return "No deals found."
             lines = []
