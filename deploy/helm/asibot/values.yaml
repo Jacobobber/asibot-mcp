@@ -247,6 +247,33 @@ postgresql:
     maxLagBytes: 10485760
 
 
+# -- Alertmanager: routes Prometheus alerts to PagerDuty/Slack/webhooks
+#
+# Enable this to deploy Alertmanager alongside Prometheus. Without it,
+# Prometheus alert rules fire but notifications go nowhere.
+alertmanager:
+  # -- Deploy Alertmanager
+  enabled: false
+  image: prom/alertmanager:latest
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # -- Webhook URL for alert notifications (used for all severity levels
+  #    unless PagerDuty/Slack is configured below)
+  webhookUrl: ""
+  # -- PagerDuty service key for SEV1 critical alerts
+  #    (takes priority over webhookUrl for SEV1)
+  pagerdutyServiceKey: ""
+  # -- Slack webhook URL for SEV1 critical alerts
+  #    (used if pagerdutyServiceKey is empty)
+  slackWebhookUrl: ""
+  # -- Slack channel for critical alerts
+  slackChannel: "#asibot-critical"
+
 # -- PgBouncer settings
 pgbouncer:
   # -- Deploy bundled PgBouncer

@@ -1,0 +1,183 @@
+{{- if .Values.alertmanager.enabled }}
+#
+# Alertmanager: routes Prometheus alerts by severity to webhook/PagerDuty/Slack
+#
+
+# -------------------------------------------------------------------
+# ConfigMap: Alertmanager configuration
+# -------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "asibot.fullname" . }}-alertmanager
+  labels:
+    {{- include "asibot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: alertmanager
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      receiver: "default"
+      group_by: ["severity", "alertname"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - match:
+            severity: SEV1
+          receiver: "sev1-critical"
+          group_wait: 10s
+          group_interval: 1m
+          repeat_interval: 15m
+        - match:
+            severity: SEV2
+          receiver: "sev2-high"
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 1h
+        - match:
+            severity: SEV3
+          receiver: "sev3-medium"
+          group_wait: 1m
+          group_interval: 30m
+          repeat_interval: 4h
+
+    receivers:
+      - name: "default"
+        {{- if .Values.alertmanager.webhookUrl }}
+        webhook_configs:
+          - url: {{ .Values.alertmanager.webhookUrl | quote }}
+            send_resolved: true
+        {{- else }}
+        webhook_configs:
+          - url: "http://placeholder:5001/alerts"
+            send_resolved: true
+        {{- end }}
+
+      - name: "sev1-critical"
+        {{- if .Values.alertmanager.pagerdutyServiceKey }}
+        pagerduty_configs:
+          - service_key: {{ .Values.alertmanager.pagerdutyServiceKey | quote }}
+            severity: critical
+        {{- else if .Values.alertmanager.slackWebhookUrl }}
+        slack_configs:
+          - api_url: {{ .Values.alertmanager.slackWebhookUrl | quote }}
+            channel: {{ .Values.alertmanager.slackChannel | default "#asibot-critical" | quote }}
+            send_resolved: true
+        {{- else }}
+        webhook_configs:
+          - url: {{ .Values.alertmanager.webhookUrl | default "http://placeholder:5001/sev1" | quote }}
+            send_resolved: true
+        {{- end }}
+
+      - name: "sev2-high"
+        {{- if .Values.alertmanager.webhookUrl }}
+        webhook_configs:
+          - url: {{ .Values.alertmanager.webhookUrl | quote }}
+            send_resolved: true
+        {{- else }}
+        webhook_configs:
+          - url: "http://placeholder:5001/sev2"
+            send_resolved: true
+        {{- end }}
+
+      - name: "sev3-medium"
+        {{- if .Values.alertmanager.webhookUrl }}
+        webhook_configs:
+          - url: {{ .Values.alertmanager.webhookUrl | quote }}
+            send_resolved: true
+        {{- else }}
+        webhook_configs:
+          - url: "http://placeholder:5001/sev3"
+            send_resolved: true
+        {{- end }}
+
+    inhibit_rules:
+      - source_match:
+          severity: SEV1
+        target_match_re:
+          severity: SEV2|SEV3
+        equal: ["alertname"]
+      - source_match:
+          severity: SEV2
+        target_match_re:
+          severity: SEV3
+        equal: ["alertname"]
+
+---
+# -------------------------------------------------------------------
+# Deployment: Alertmanager
+# -------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "asibot.fullname" . }}-alertmanager
+  labels:
+    {{- include "asibot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "asibot.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: alertmanager
+  template:
+    metadata:
+      labels:
+        {{- include "asibot.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: alertmanager
+    spec:
+      containers:
+        - name: alertmanager
+          image: {{ .Values.alertmanager.image }}
+          args:
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--storage.path=/alertmanager"
+          ports:
+            - containerPort: 9093
+          resources:
+            {{- toYaml .Values.alertmanager.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9093
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9093
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "asibot.fullname" . }}-alertmanager
+
+---
+# -------------------------------------------------------------------
+# Service: Alertmanager
+# -------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "asibot.fullname" . }}-alertmanager
+  labels:
+    {{- include "asibot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: alertmanager
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "asibot.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: alertmanager
+  ports:
+    - port: 9093
+      targetPort: 9093
+      name: alertmanager
+{{- end }}

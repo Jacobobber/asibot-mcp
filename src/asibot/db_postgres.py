@@ -148,11 +148,14 @@ class PostgresBackend:
         database_url: str,
         min_size: int = 5,
         max_size: int = 20,
+        read_url: str = "",
     ) -> None:
         self._database_url = database_url
         self._min_size = min_size
         self._max_size = max_size
+        self._read_url = read_url or database_url
         self._pool: asyncpg.Pool | None = None
+        self._read_pool: asyncpg.Pool | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -171,6 +174,24 @@ class PostgresBackend:
             self._max_size,
         )
 
+        # Initialize read replica pool if configured
+        if self._read_url != self._database_url:
+            try:
+                self._read_pool = await asyncpg.create_pool(
+                    self._read_url,
+                    min_size=self._min_size,
+                    max_size=self._max_size,
+                )
+                logger.info("PostgreSQL read replica pool initialized")
+            except Exception:
+                logger.warning(
+                    "Failed to connect to read replica, falling back to primary",
+                    exc_info=True,
+                )
+                self._read_pool = self._pool
+        else:
+            self._read_pool = self._pool
+
         # Apply base schema (all statements are idempotent).
         async with self._pool.acquire() as conn:
             await conn.execute(_SCHEMA)
@@ -180,10 +201,15 @@ class PostgresBackend:
         logger.info("PostgresBackend initialised (schema version %d)", _CURRENT_VERSION)
 
     async def close(self) -> None:
-        """Gracefully close the connection pool."""
+        """Gracefully close the connection pool(s)."""
+        if self._read_pool is not None and self._read_pool is not self._pool:
+            await self._read_pool.close()
+            self._read_pool = None
+            logger.info("PostgreSQL read replica pool closed")
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
+            self._read_pool = None
             logger.info("PostgreSQL pool closed")
 
     # ------------------------------------------------------------------
@@ -196,6 +222,10 @@ class PostgresBackend:
                 "PostgresBackend not initialised. Call initialize() first."
             )
         return self._pool
+
+    def _get_read_pool(self) -> asyncpg.Pool:
+        """Return read-only pool (replica if configured, else primary)."""
+        return self._read_pool or self._get_pool()
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[asyncpg.Connection]:
@@ -438,7 +468,7 @@ class PostgresBackend:
 
     async def get_user_by_key(self, api_key: str) -> dict | None:
         """Look up a user by API key."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         row = await pool.fetchrow(
             "SELECT * FROM users WHERE api_key = $1", api_key
         )
@@ -446,7 +476,7 @@ class PostgresBackend:
 
     async def get_user_by_email(self, email: str) -> dict | None:
         """Look up a user by email (user_id)."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         row = await pool.fetchrow(
             "SELECT * FROM users WHERE user_id = $1", email
         )
@@ -467,7 +497,7 @@ class PostgresBackend:
 
     async def list_users(self) -> list[dict]:
         """Return all users."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         rows = await pool.fetch("SELECT * FROM users")
         return _records_to_dicts(rows)
 
@@ -583,7 +613,7 @@ class PostgresBackend:
 
     async def get_credentials(self, user_id: str, service: str) -> bytes | None:
         """Get the encrypted credentials blob for a service."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         row = await pool.fetchrow(
             "SELECT encrypted_blob FROM credentials WHERE user_id = $1 AND service = $2",
             user_id,
@@ -602,7 +632,7 @@ class PostgresBackend:
 
     async def list_connected(self, user_id: str) -> list[str]:
         """List service names the user has credentials for."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         rows = await pool.fetch(
             "SELECT service FROM credentials WHERE user_id = $1", user_id
         )
@@ -614,7 +644,7 @@ class PostgresBackend:
 
     async def get_service_prefs(self, user_id: str, service: str) -> dict:
         """Get preferences for a service. Returns {} if not set."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         row = await pool.fetchrow(
             "SELECT enabled, mode FROM preferences WHERE user_id = $1 AND service = $2",
             user_id,
@@ -671,7 +701,7 @@ class PostgresBackend:
 
     async def get_session_user(self, session_id: str) -> str | None:
         """Look up a session, returning the user_id if still valid."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         row = await pool.fetchrow(
             "SELECT user_id FROM sessions WHERE session_id = $1 AND expires_at > $2",
             session_id,
@@ -684,7 +714,7 @@ class PostgresBackend:
 
         Returns ``{session_id: (user_id, created_at)}``.
         """
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         rows = await pool.fetch(
             "SELECT session_id, user_id, created_at FROM sessions WHERE expires_at > $1",
             time.time(),
@@ -772,7 +802,7 @@ class PostgresBackend:
         limit: int = 100,
     ) -> list[dict]:
         """Query audit log entries with optional filters."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         conditions: list[str] = []
         params: list[Any] = []
         idx = 1
@@ -803,7 +833,7 @@ class PostgresBackend:
         self, start: float, end: float
     ) -> list[dict]:
         """Return all audit entries within [start, end] timestamp range."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         rows = await pool.fetch(
             """
             SELECT ts, user_id, tool, args_json, service, success, latency_ms,
@@ -971,7 +1001,7 @@ class PostgresBackend:
 
     async def db_stats(self) -> dict:
         """Get database statistics for health checks."""
-        pool = self._get_pool()
+        pool = self._get_read_pool()
         stats: dict[str, Any] = {}
         for table in (
             "users",
@@ -983,9 +1013,18 @@ class PostgresBackend:
             row = await pool.fetchrow(f"SELECT COUNT(*) AS cnt FROM {table}")  # noqa: S608
             stats[f"{table}_count"] = row["cnt"] if row else 0
 
-        # Include pool-level diagnostics.
-        stats["pool_size"] = pool.get_size()
-        stats["pool_free"] = pool.get_idle_size()
-        stats["pool_min"] = pool.get_min_size()
-        stats["pool_max"] = pool.get_max_size()
+        # Include pool-level diagnostics (primary pool).
+        primary = self._get_pool()
+        stats["pool_size"] = primary.get_size()
+        stats["pool_free"] = primary.get_idle_size()
+        stats["pool_min"] = primary.get_min_size()
+        stats["pool_max"] = primary.get_max_size()
+
+        # Include read pool diagnostics if separate from primary.
+        if pool is not primary:
+            stats["read_pool_size"] = pool.get_size()
+            stats["read_pool_free"] = pool.get_idle_size()
+            stats["read_pool_min"] = pool.get_min_size()
+            stats["read_pool_max"] = pool.get_max_size()
+
         return stats

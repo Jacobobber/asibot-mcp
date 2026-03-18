@@ -1,0 +1,70 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: "default"
+  group_by: ["severity", "alertname"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: SEV1
+      receiver: "sev1-critical"
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 15m
+    - match:
+        severity: SEV2
+      receiver: "sev2-high"
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+    - match:
+        severity: SEV3
+      receiver: "sev3-medium"
+      group_wait: 1m
+      group_interval: 30m
+      repeat_interval: 4h
+
+receivers:
+  - name: "default"
+    webhook_configs:
+      - url: "http://placeholder:5001/alerts"
+        send_resolved: true
+
+  - name: "sev1-critical"
+    # CONFIGURE: Replace with PagerDuty or Slack webhook for critical alerts
+    webhook_configs:
+      - url: "http://placeholder:5001/sev1"
+        send_resolved: true
+    # Uncomment for PagerDuty:
+    # pagerduty_configs:
+    #   - service_key: "YOUR_PAGERDUTY_KEY"
+    #     severity: critical
+    # Uncomment for Slack:
+    # slack_configs:
+    #   - api_url: "YOUR_SLACK_WEBHOOK_URL"
+    #     channel: "#asibot-critical"
+
+  - name: "sev2-high"
+    webhook_configs:
+      - url: "http://placeholder:5001/sev2"
+        send_resolved: true
+
+  - name: "sev3-medium"
+    webhook_configs:
+      - url: "http://placeholder:5001/sev3"
+        send_resolved: true
+
+inhibit_rules:
+  - source_match:
+      severity: SEV1
+    target_match_re:
+      severity: SEV2|SEV3
+    equal: ["alertname"]
+  - source_match:
+      severity: SEV2
+    target_match_re:
+      severity: SEV3
+    equal: ["alertname"]

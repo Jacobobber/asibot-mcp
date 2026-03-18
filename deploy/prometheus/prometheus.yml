@@ -5,8 +5,14 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 rule_files:
   - "alerts.yml"
+  - "postgres-alerts.yml"
 
 scrape_configs:
   - job_name: "asibot"
@@ -16,3 +22,7 @@ scrape_configs:
       - targets: ["asibot:9090"]
         labels:
           service: "asibot"
+
+  - job_name: "postgres"
+    static_configs:
+      - targets: ["postgres-exporter:9187"]

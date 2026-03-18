@@ -30,7 +30,7 @@ data:
   postgresql_primary.conf: |
     wal_level = replica
     max_wal_senders = 10
-    wal_keep_size = '512MB'
+    wal_keep_size = '1GB'
     hot_standby = on
     archive_mode = on
     archive_command = '/bin/true'

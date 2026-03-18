@@ -30,6 +30,10 @@ data:
   ASIBOT_AUDIT_RETENTION_DAYS: {{ .Values.config.auditRetentionDays | quote }}
   ASIBOT_GLOBAL_RATE_LIMIT_DEFAULT: {{ .Values.config.globalRateLimitDefault | quote }}
   ASIBOT_PER_USER_RATE_LIMIT_DEFAULT: {{ .Values.config.perUserRateLimitDefault | quote }}
+{{- if and .Values.postgresql.enabled .Values.postgresql.ha.enabled }}
+  # Read replica URL — routes read-only queries to streaming replicas
+  ASIBOT_DATABASE_READ_URL: "postgresql://asibot:$(POSTGRES_PASSWORD)@{{ include "asibot.fullname" . }}-postgres-replicas:5432/asibot"
+{{- end }}
 {{- if .Values.pgbouncer.enabled }}
 ---
 apiVersion: v1

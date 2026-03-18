@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # Database / sessions
     db_pool_size: int = 10
     database_url: str = ""  # e.g., "postgresql://user:pass@host:5432/asibot"
+    database_read_url: str = ""  # Read replica URL (optional, falls back to database_url)
     postgres_password: str = ""  # Extracted from database_url at runtime, or set directly
     # Pool sizing: 100 max supports ~1000 concurrent users assuming 10:1
     # user-to-connection ratio with short-lived queries. Min 10 keeps warm

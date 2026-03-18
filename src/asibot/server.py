@@ -423,7 +423,12 @@ async def init_db_backend() -> None:
         return
     try:
         from asibot.db_postgres import PostgresBackend
-        _db_backend = PostgresBackend(settings.database_url)
+        _db_backend = PostgresBackend(
+            settings.database_url,
+            min_size=settings.pg_pool_min_size,
+            max_size=settings.pg_pool_max_size,
+            read_url=settings.database_read_url,
+        )
         await _db_backend.initialize()
         logger.info("PostgresBackend initialised for OAuth state persistence")
     except Exception as exc:
