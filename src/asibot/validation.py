@@ -161,6 +161,9 @@ def validate_limit(value: int, max_val: int = 100) -> int:
 
 _SAFE_SUBDOMAIN = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$")
 
+# Known GitHub token prefixes
+_GITHUB_TOKEN_PREFIXES = ("ghp_", "ghs_", "github_pat_", "gho_")
+
 
 def validate_base_url(value: str, param_name: str = "base_url") -> str | None:
     """Validate a base URL is HTTPS and doesn't contain path traversal."""
@@ -182,4 +185,72 @@ def validate_folder_name(value: str, allowed: frozenset[str]) -> str | None:
         return "Folder name is required."
     if value not in allowed:
         return f"Invalid folder: '{value}'. Allowed: {', '.join(sorted(allowed))}"
+    return None
+
+
+# --- Credential Validation ---
+
+_MIN_API_KEY_LENGTH = 10
+
+
+def strip_credential_values(creds: dict) -> dict:
+    """Strip leading/trailing whitespace from all string credential values."""
+    return {k: v.strip() if isinstance(v, str) else v for k, v in creds.items()}
+
+
+def validate_credentials(service: str, creds: dict) -> str | None:
+    """Validate credential format for a service before storage.
+
+    Returns an error message string if invalid, None if OK.
+    Credentials should already be whitespace-stripped before calling this.
+    """
+    errors: list[str] = []
+
+    # Check all values are non-empty after stripping
+    for key, value in creds.items():
+        if isinstance(value, str) and not value:
+            errors.append(f"'{key}' is empty.")
+
+    if errors:
+        return "Invalid credentials: " + " ".join(errors)
+
+    # Service-specific format validation
+    if service == "github":
+        token = creds.get("token", "")
+        if token and not any(token.startswith(p) for p in _GITHUB_TOKEN_PREFIXES):
+            prefix = token[:4] + "..." if len(token) > 4 else token
+            errors.append(
+                f"GitHub token should start with 'ghp_', 'ghs_', 'github_pat_', or 'gho_'. "
+                f"Got: '{prefix}'"
+            )
+
+    elif service == "salesforce":
+        instance_url = creds.get("instance_url", "")
+        if instance_url and not instance_url.startswith("https://"):
+            errors.append("Salesforce instance_url must start with 'https://'.")
+
+    elif service in ("atlassian", "confluence"):
+        base_url = creds.get("base_url", "")
+        domain = creds.get("domain", "")
+        if base_url and not base_url.startswith("https://"):
+            errors.append(f"{service} base_url must start with 'https://'.")
+        if domain and not domain.strip("."):
+            errors.append(f"{service} domain appears invalid.")
+
+    elif service == "sap":
+        base_url = creds.get("base_url", "")
+        if base_url and not base_url.startswith("https://"):
+            errors.append("SAP base_url must start with 'https://'.")
+
+    # API key minimum length check (applies to fields named 'token', 'api_key', 'api_token')
+    for key in ("token", "api_key", "api_token"):
+        value = creds.get(key, "")
+        if value and len(value) < _MIN_API_KEY_LENGTH:
+            errors.append(
+                f"'{key}' seems too short (min {_MIN_API_KEY_LENGTH} chars). "
+                f"Check for typos."
+            )
+
+    if errors:
+        return "Credential validation failed: " + " ".join(errors)
     return None

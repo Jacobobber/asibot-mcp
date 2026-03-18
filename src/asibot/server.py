@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import audit, auth, db, http_pool, metrics, migrate, token_store, user_session
+from asibot import audit, auth, db, http_pool, metrics, migrate, token_store, user_session, validation
 from asibot.connectors import microsoft
 from asibot.config import settings
 from asibot.connectors import registry
@@ -969,10 +969,18 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
     if not isinstance(creds, dict):
         return "Credentials must be a JSON object, not an array or other type."
 
+    # Strip whitespace from all credential values
+    creds = validation.strip_credential_values(creds)
+
     required_fields, _ = token_store.get_required_fields(service)
     missing = [f for f in required_fields if not creds.get(f)]
     if missing:
         return f"Missing required fields: {', '.join(missing)}"
+
+    # Validate credential format before storing
+    val_err = validation.validate_credentials(service, creds)
+    if val_err:
+        return val_err
 
     token_store.set_credentials(user_id, service, creds)
     audit.log_event(user_id, "service_connected", service=service)

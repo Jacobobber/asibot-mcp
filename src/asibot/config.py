@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     # Audit
     audit_retention_days: int = 90
 
+    # Global per-service rate limits (requests per minute)
+    global_rate_limit_default: int = 200
+    global_rate_limits: dict[str, int] = {}  # e.g., {"github": 80, "salesforce": 100}
+
     @property
     def users_dir(self) -> Path:
         return self.data_dir / "users"

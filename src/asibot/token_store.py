@@ -7,6 +7,8 @@ Per-user files at ~/.asibot/users/{user_id}/:
 """
 
 import logging
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -17,6 +19,70 @@ from asibot import user_session
 from asibot.crypto import load_encrypted, save_encrypted
 
 logger = logging.getLogger(__name__)
+
+
+# --- Global Per-Service Rate Limiter (sliding window) ---
+
+
+class GlobalRateLimiter:
+    """Thread-safe sliding window rate limiter, one window per service.
+
+    Limits the total number of requests across ALL users for a given external
+    service within a 60-second window.  Designed for production deployments
+    with 1000+ concurrent users where per-user limits alone are insufficient.
+    """
+
+    def __init__(self) -> None:
+        self._windows: dict[str, list[float]] = {}  # service -> sorted timestamps
+        self._lock = threading.Lock()
+        self._hits: dict[str, int] = {}  # service -> total hit count (metric)
+
+    def _get_limit(self, service: str) -> int:
+        from asibot.config import settings
+        return settings.global_rate_limits.get(service, settings.global_rate_limit_default)
+
+    def check(self, service: str) -> tuple[bool, int]:
+        """Check if a request is allowed for the given service.
+
+        Returns:
+            (allowed, retry_after_seconds).  If allowed is False, the caller
+            should back off for retry_after_seconds.
+        """
+        limit = self._get_limit(service)
+        now = time.monotonic()
+        window_start = now - 60.0
+
+        with self._lock:
+            timestamps = self._windows.get(service, [])
+            # Trim entries older than 60 seconds
+            timestamps = [t for t in timestamps if t > window_start]
+
+            if len(timestamps) >= limit:
+                # Estimate when the oldest entry will expire
+                retry_after = int(timestamps[0] - window_start) + 1
+                retry_after = max(retry_after, 1)
+                self._hits[service] = self._hits.get(service, 0) + 1
+                self._windows[service] = timestamps
+                return False, retry_after
+
+            timestamps.append(now)
+            self._windows[service] = timestamps
+            return True, 0
+
+    def get_hits(self, service: str) -> int:
+        """Return total number of rate-limit rejections for a service (metric)."""
+        with self._lock:
+            return self._hits.get(service, 0)
+
+    def reset(self) -> None:
+        """Reset all state (for testing)."""
+        with self._lock:
+            self._windows.clear()
+            self._hits.clear()
+
+
+# Singleton instance
+global_rate_limiter = GlobalRateLimiter()
 
 # --- Schema Versioning ---
 
@@ -176,6 +242,9 @@ async def safe_request(
 ) -> tuple[httpx.Response | None, str | None]:
     """Execute an HTTP request with standardized error handling.
 
+    Checks the global per-service rate limit before making the request.
+    If the global limit is exceeded, returns an error with retry-after guidance.
+
     Args:
         client: httpx.AsyncClient to use
         method: HTTP method ("get", "post", "put", "patch", "delete")
@@ -186,6 +255,15 @@ async def safe_request(
 
     Returns: (response, error_message). If error_message is set, response is None.
     """
+    # Check global per-service rate limit (fail fast before per-user checks)
+    service_key = service.lower().replace(" ", "_")
+    allowed, retry_after = global_rate_limiter.check(service_key)
+    if not allowed:
+        return None, (
+            f"Service rate limit reached for {service}. "
+            f"Retrying automatically. (retry after {retry_after}s)"
+        )
+
     try:
         r = await client.request(method, url, **kwargs)
         r.raise_for_status()
@@ -464,6 +542,74 @@ def get_required_fields(service: str) -> tuple[list[str], list[str]]:
             labels.append(label_map.get(sf, sf))
 
     return fields, labels
+
+# --- OAuth Token Refresh ---
+
+
+async def refresh_oauth_token(
+    service: str,
+    user_id: str,
+    refresh_url: str,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+) -> dict | None:
+    """Refresh an OAuth access token using a refresh token.
+
+    Posts to the provider's token endpoint with grant_type=refresh_token,
+    updates the user's stored credentials, and returns the new credential dict.
+
+    Returns None if the refresh fails (caller should prompt re-authentication).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            resp = await http.post(
+                refresh_url,
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        new_creds: dict = {"token": data["access_token"]}
+        # Preserve refresh token (provider may rotate it)
+        new_creds["refresh_token"] = data.get("refresh_token", refresh_token)
+        if data.get("expires_in"):
+            new_creds["expires_at"] = str(time.time() + data["expires_in"])
+
+        # Merge into existing stored credentials (preserve extra fields like org, etc.)
+        existing = get_credentials(user_id, service)
+        existing.update(new_creds)
+        set_credentials(user_id, service, existing)
+        logger.info("%s: refreshed OAuth token for user '%s'", service, user_id)
+        return existing
+    except httpx.HTTPStatusError:
+        logger.warning("%s: OAuth token refresh HTTP error for user '%s'", service, user_id)
+        return None
+    except (httpx.RequestError, KeyError, ValueError) as e:
+        logger.warning("%s: OAuth token refresh failed for user '%s': %s", service, user_id, e)
+        return None
+
+
+def is_token_expired(creds: dict, margin_seconds: int = 300) -> bool:
+    """Check if an OAuth token is expired or will expire within margin_seconds.
+
+    Uses the 'expires_at' field stored as a string timestamp.
+    Returns False if no expires_at is set (assume valid).
+    """
+    expires_at_str = creds.get("expires_at")
+    if not expires_at_str:
+        return False
+    try:
+        expires_at = float(expires_at_str)
+    except (ValueError, TypeError):
+        return False
+    return time.time() > (expires_at - margin_seconds)
+
 
 # Microsoft services (auth handled by microsoft.py, not credentials.json)
 MICROSOFT_SERVICES = ["sharepoint", "outlook", "calendar", "teams"]
