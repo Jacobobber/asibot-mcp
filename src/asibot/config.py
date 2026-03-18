@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     sap_base_url: str = ""  # e.g., "https://api.sap.mycompany.com"
     roboflow_workspace: str = ""  # e.g., "mycompany"
 
+    # Global per-service rate limits (requests per minute)
+    global_rate_limit_default: int = 200
+    global_rate_limits: dict[str, int] = {}  # e.g., {"github": 80, "salesforce": 100}
+
     @property
     def users_dir(self) -> Path:
         return self.data_dir / "users"

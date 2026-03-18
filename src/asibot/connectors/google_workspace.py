@@ -12,6 +12,39 @@ from asibot.connectors.base import Connector
 logger = logging.getLogger(__name__)
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 CALENDAR_API = "https://www.googleapis.com/calendar/v3"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+
+async def _ensure_google_token(user_id: str) -> str | None:
+    """Check if the Google OAuth token is expired and refresh if needed.
+
+    Returns an error message string if the token cannot be refreshed, None if OK.
+    After a successful refresh the stored credentials and the ClientSpec-built
+    client will use the new token on the next require_service() call.
+    """
+    creds = token_store.get_credentials(user_id, "google")
+    if not creds:
+        return None  # no creds — require_service will catch this
+
+    if not token_store.is_token_expired(creds):
+        return None  # token is still valid
+
+    refresh_tok = creds.get("refresh_token")
+    if not refresh_tok:
+        return "Google token expired and no refresh token available. Please reconnect: 'connect to google'."
+
+    from asibot.config import settings
+    result = await token_store.refresh_oauth_token(
+        service="google",
+        user_id=user_id,
+        refresh_url=GOOGLE_TOKEN_URL,
+        client_id=settings.google_client_id,
+        client_secret=settings.google_client_secret,
+        refresh_token=refresh_tok,
+    )
+    if result is None:
+        return "Google token expired. Please reconnect: 'connect to google'."
+    return None
 
 
 class GoogleWorkspaceConnector(Connector):
@@ -41,6 +74,12 @@ class GoogleWorkspaceConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
+            # Proactive token refresh (before building client)
+            uid, id_err = token_store.check_permission(ctx, "google", "read")
+            if not id_err and uid:
+                refresh_err = await _ensure_google_token(uid)
+                if refresh_err:
+                    return refresh_err
             client, uid, err = token_store.require_service(ctx, "google", level="read")
             if err:
                 return err
@@ -72,6 +111,11 @@ class GoogleWorkspaceConnector(Connector):
                 if err:
                     return err
             limit = validation.validate_limit(limit)
+            uid, id_err = token_store.check_permission(ctx, "google", "read")
+            if not id_err and uid:
+                refresh_err = await _ensure_google_token(uid)
+                if refresh_err:
+                    return refresh_err
             client, uid, err = token_store.require_service(ctx, "google", level="read")
             if err:
                 return err
@@ -100,6 +144,11 @@ class GoogleWorkspaceConnector(Connector):
             err = validation.validate_id(file_id, "file_id")
             if err:
                 return err
+            uid, id_err = token_store.check_permission(ctx, "google", "read")
+            if not id_err and uid:
+                refresh_err = await _ensure_google_token(uid)
+                if refresh_err:
+                    return refresh_err
             client, uid, err = token_store.require_service(ctx, "google", level="read")
             if err:
                 return err
@@ -145,6 +194,11 @@ class GoogleWorkspaceConnector(Connector):
                 days: Number of days to look ahead (default: 7)
                 limit: Max results (default: 20)
             """
+            uid, id_err = token_store.check_permission(ctx, "google", "read")
+            if not id_err and uid:
+                refresh_err = await _ensure_google_token(uid)
+                if refresh_err:
+                    return refresh_err
             client, uid, err = token_store.require_service(ctx, "google", level="read")
             if err:
                 return err

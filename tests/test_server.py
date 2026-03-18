@@ -62,7 +62,7 @@ class TestCredentialValidation:
             patch.object(server.token_store, "set_credentials"),
         ):
             result = await server.asibot_set_credentials(
-                "github", '{"token": "ghp_xxx", "org": "myorg"}', ctx
+                "github", '{"token": "ghp_validtoken123", "org": "myorg"}', ctx
             )
             assert "Connected" in result
 
