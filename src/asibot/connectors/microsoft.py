@@ -72,8 +72,8 @@ def is_expired(token_data: dict) -> bool:
 
 
 async def refresh_token(user_id: str, token_data: dict) -> bool:
-    tenant_id = settings.sharepoint_tenant_id
-    client_id = settings.sharepoint_client_id
+    tenant_id = settings.ms365_tenant_id
+    client_id = settings.ms365_client_id
     rt = token_data.get("refresh_token")
     if not rt:
         logger.warning("Microsoft: no refresh_token for user '%s'", user_id)

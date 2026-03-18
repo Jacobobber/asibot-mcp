@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     port: int = 8080
 
     # Microsoft SSO (delegated auth via device code flow — used by all MS365 connectors)
-    sharepoint_tenant_id: str = ""
-    sharepoint_client_id: str = ""
+    ms365_tenant_id: str = ""
+    ms365_client_id: str = ""
     sharepoint_site_url: str = ""  # e.g., "company.sharepoint.com"
 
     # GitHub OAuth (device code flow — zero user input)

@@ -77,8 +77,8 @@ class TestSetupCSRF:
 
         with (
             patch.object(server.user_session, "require_user", return_value=(None, "no user")),
-            patch.object(server.settings, "sharepoint_tenant_id", "test-tenant"),
-            patch.object(server.settings, "sharepoint_client_id", "test-client"),
+            patch.object(server.settings, "ms365_tenant_id", "test-tenant"),
+            patch.object(server.settings, "ms365_client_id", "test-client"),
             patch("asibot.server.httpx.AsyncClient") as mock_http_cls,
             patch("asibot.server.asyncio.create_task") as mock_task,
         ):

@@ -29,7 +29,7 @@ class OutlookConnector(Connector):
         return []
 
     def register_tools(self, mcp: FastMCP):
-        if not all([settings.sharepoint_tenant_id, settings.sharepoint_client_id]):
+        if not all([settings.ms365_tenant_id, settings.ms365_client_id]):
             return
 
         @mcp.tool()

@@ -58,11 +58,11 @@ async def asibot_setup(ctx: Context) -> str:
                 f'{_config_snippet(user["api_key"])}'
             )
 
-    tenant_id = settings.sharepoint_tenant_id
-    client_id = settings.sharepoint_client_id
+    tenant_id = settings.ms365_tenant_id
+    client_id = settings.ms365_client_id
 
     if not all([tenant_id, client_id]):
-        return "Server not configured for SSO. Set ASIBOT_SHAREPOINT_TENANT_ID and ASIBOT_SHAREPOINT_CLIENT_ID."
+        return "Server not configured for SSO. Set ASIBOT_MS365_TENANT_ID and ASIBOT_MS365_CLIENT_ID."
 
     # Start device code flow
     async with httpx.AsyncClient() as http:

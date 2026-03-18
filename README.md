@@ -71,8 +71,8 @@ All settings use the `ASIBOT_` env prefix. Copy `.env.example` to `.env`:
 
 | Variable | Description |
 |----------|-------------|
-| `ASIBOT_SHAREPOINT_TENANT_ID` | Azure AD tenant ID (required for Microsoft SSO) |
-| `ASIBOT_SHAREPOINT_CLIENT_ID` | Azure AD app client ID (required for Microsoft SSO) |
+| `ASIBOT_MS365_TENANT_ID` | Azure AD tenant ID (required for Microsoft SSO) |
+| `ASIBOT_MS365_CLIENT_ID` | Azure AD app client ID (required for Microsoft SSO) |
 | `ASIBOT_SHAREPOINT_SITE_URL` | Default SharePoint site (e.g., `company.sharepoint.com`) |
 | `ASIBOT_GITHUB_CLIENT_ID` | GitHub OAuth App client ID (enables zero-input GitHub setup) |
 | `ASIBOT_GOOGLE_CLIENT_ID` | Google OAuth client ID (enables zero-input Google setup) |
