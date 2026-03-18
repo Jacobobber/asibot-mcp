@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import functools
 import json
 import logging
 import secrets
@@ -46,11 +47,132 @@ mcp = FastMCP(
     lifespan=_lifespan,
 )
 
+# --- Concurrency Controls ---
+
+# Global semaphore: limits total concurrent tool calls across all users
+_request_semaphore: asyncio.Semaphore | None = None
+
+# Per-user semaphores: limits concurrent tool calls per user
+_user_semaphores: dict[str, asyncio.Semaphore] = {}
+_user_semaphores_lock = asyncio.Lock()
+
+# Per-service semaphores: limits concurrent calls to each external service
+_service_semaphores: dict[str, asyncio.Semaphore] = {}
+_service_semaphores_lock = asyncio.Lock()
+
+# Metrics counters for concurrency
+requests_queued = 0
+requests_rejected = 0
+concurrent_active = 0
+
+
+def _get_request_semaphore() -> asyncio.Semaphore:
+    """Lazy-init the global request semaphore (must be called in async context)."""
+    global _request_semaphore
+    if _request_semaphore is None:
+        _request_semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+    return _request_semaphore
+
+
+async def _get_user_semaphore(user_id: str) -> asyncio.Semaphore:
+    """Get or create a per-user semaphore."""
+    async with _user_semaphores_lock:
+        if user_id not in _user_semaphores:
+            _user_semaphores[user_id] = asyncio.Semaphore(settings.max_concurrent_per_user)
+        return _user_semaphores[user_id]
+
+
+async def _get_service_semaphore(service: str) -> asyncio.Semaphore:
+    """Get or create a per-service semaphore."""
+    async with _service_semaphores_lock:
+        if service not in _service_semaphores:
+            _service_semaphores[service] = asyncio.Semaphore(settings.max_concurrent_per_service)
+        return _service_semaphores[service]
+
+
+def concurrency_limited(service: str | None = None):
+    """Decorator that enforces global and per-user concurrency limits on tool handlers.
+
+    Args:
+        service: Optional external service name for per-service limiting.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            global requests_queued, requests_rejected, concurrent_active
+
+            # Extract user_id from ctx if present
+            ctx = kwargs.get("ctx") or next(
+                (a for a in args if isinstance(a, Context)), None
+            )
+            user_id = None
+            if ctx:
+                uid, _ = user_session.require_user(ctx)
+                user_id = uid
+
+            # Try global semaphore (non-blocking check)
+            global_sem = _get_request_semaphore()
+            if global_sem.locked() and global_sem._value == 0:
+                requests_rejected += 1
+                return "Server at capacity, please retry in a moment"
+
+            requests_queued += 1
+            try:
+                # Acquire global semaphore
+                try:
+                    await asyncio.wait_for(global_sem.acquire(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    requests_rejected += 1
+                    return "Server at capacity, please retry in a moment"
+
+                try:
+                    # Acquire per-user semaphore
+                    if user_id:
+                        user_sem = await _get_user_semaphore(user_id)
+                        try:
+                            await asyncio.wait_for(user_sem.acquire(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            requests_rejected += 1
+                            return "Server at capacity, please retry in a moment"
+                    else:
+                        user_sem = None
+
+                    try:
+                        # Acquire per-service semaphore
+                        if service:
+                            svc_sem = await _get_service_semaphore(service)
+                            try:
+                                await asyncio.wait_for(svc_sem.acquire(), timeout=5.0)
+                            except asyncio.TimeoutError:
+                                requests_rejected += 1
+                                return "Server at capacity, please retry in a moment"
+                        else:
+                            svc_sem = None
+
+                        try:
+                            concurrent_active += 1
+                            return await fn(*args, **kwargs)
+                        finally:
+                            concurrent_active -= 1
+                            if svc_sem is not None:
+                                svc_sem.release()
+                    finally:
+                        if user_sem is not None:
+                            user_sem.release()
+                finally:
+                    global_sem.release()
+            finally:
+                requests_queued -= 1
+
+        return wrapper
+    return decorator
+
 
 # --- Setup & Identity ---
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_setup(ctx: Context) -> str:
     """One-time account setup. Signs you in with Microsoft SSO and creates your API key.
 
@@ -103,6 +225,13 @@ async def asibot_setup(ctx: Context) -> str:
             return "Too many pending setups. Please try again later."
         _pending_setups[setup_id] = {"status": "pending", "_created_at": time.time()}
 
+    # Enforce concurrent polling task limit
+    global _active_polling_tasks
+    async with _active_polling_lock:
+        if _active_polling_tasks >= settings.max_concurrent_setups:
+            return "Too many pending setups. Please try again later."
+        _active_polling_tasks += 1
+
     # Poll for token in background
     task = asyncio.create_task(_complete_setup(
         tenant_id, client_id, device_code, expires_in, interval, setup_id
@@ -125,10 +254,17 @@ _pending_setups: dict[str, dict] = {}
 _pending_setups_lock = asyncio.Lock()
 _SETUP_TTL = 900  # 15 minutes — matches device code expiry
 _MAX_PENDING_SETUPS = 100
+_HARD_POLL_TIMEOUT = 15 * 60  # 15 minutes absolute max for any polling task
+_POLL_BACKOFF_INITIAL = 5  # Initial poll interval in seconds
+_POLL_BACKOFF_MAX = 30  # Maximum poll interval in seconds
+_active_polling_tasks = 0
+_active_polling_lock = asyncio.Lock()
 
 
 def _on_task_done(task: asyncio.Task, setup_id: str) -> None:
     """Log unhandled exceptions from background setup tasks and mark them failed."""
+    global _active_polling_tasks
+    _active_polling_tasks = max(0, _active_polling_tasks - 1)
     if task.cancelled():
         return
     exc = task.exception()
@@ -153,14 +289,20 @@ async def _complete_setup(
     tenant_id: str, client_id: str, device_code: str, expires_in: int, interval: int,
     setup_id: str = "",
 ) -> None:
-    """Poll Microsoft for token, then create user."""
+    """Poll Microsoft for token, then create user.
+
+    Uses a hard timeout of _HARD_POLL_TIMEOUT and exponential backoff.
+    """
     if not setup_id:
         setup_id = secrets.token_urlsafe(16)
-    deadline = time.time() + expires_in
+    # Use the lesser of device code expiry and the hard timeout
+    effective_timeout = min(expires_in, _HARD_POLL_TIMEOUT)
+    deadline = time.time() + effective_timeout
     token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    current_interval = max(interval, _POLL_BACKOFF_INITIAL)
 
     while time.time() < deadline:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(current_interval)
 
         try:
             async with httpx.AsyncClient() as http:
@@ -171,6 +313,7 @@ async def _complete_setup(
                 })
         except httpx.RequestError as e:
             logger.warning("Setup poll request failed: %s", e)
+            current_interval = min(current_interval * 2, _POLL_BACKOFF_MAX)
             continue
 
         data = resp.json()
@@ -218,9 +361,11 @@ async def _complete_setup(
 
         error = data.get("error", "")
         if error == "authorization_pending":
+            # Exponential backoff on continued waiting
+            current_interval = min(current_interval * 1.5, _POLL_BACKOFF_MAX)
             continue
         elif error == "slow_down":
-            interval += 5
+            current_interval = min(current_interval + 5, _POLL_BACKOFF_MAX)
         else:
             _pending_setups[setup_id] = {
                 "status": "failed",
@@ -324,6 +469,13 @@ async def _start_device_code_flow(service: str, user_id: str) -> str:
             return "Too many pending setups. Please try again later."
         _pending_setups[setup_id] = {"status": "pending", "_created_at": time.time()}
 
+    # Enforce concurrent polling task limit
+    global _active_polling_tasks
+    async with _active_polling_lock:
+        if _active_polling_tasks >= settings.max_concurrent_setups:
+            return "Too many pending setups. Please try again later."
+        _active_polling_tasks += 1
+
     task = asyncio.create_task(_complete_device_code_oauth(
         service, device_code, expires_in, interval, setup_id, user_id,
     ))
@@ -345,13 +497,18 @@ async def _complete_device_code_oauth(
     service: str, device_code: str, expires_in: int, interval: int,
     setup_id: str, user_id: str,
 ) -> None:
-    """Poll an OAuth provider for a token, then store credentials."""
+    """Poll an OAuth provider for a token, then store credentials.
+
+    Uses a hard timeout of _HARD_POLL_TIMEOUT and exponential backoff.
+    """
     provider = _OAUTH_PROVIDERS[service]
     display_name = provider["display_name"]
-    deadline = time.time() + expires_in
+    effective_timeout = min(expires_in, _HARD_POLL_TIMEOUT)
+    deadline = time.time() + effective_timeout
+    current_interval = max(interval, _POLL_BACKOFF_INITIAL)
 
     while time.time() < deadline:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(current_interval)
         try:
             async with httpx.AsyncClient() as http:
                 resp = await http.post(
@@ -361,6 +518,7 @@ async def _complete_device_code_oauth(
                 )
         except httpx.RequestError as e:
             logger.warning("%s OAuth poll failed: %s", display_name, e)
+            current_interval = min(current_interval * 2, _POLL_BACKOFF_MAX)
             continue
 
         data = resp.json()
@@ -378,9 +536,10 @@ async def _complete_device_code_oauth(
 
         error = data.get("error", "")
         if error == "authorization_pending":
+            current_interval = min(current_interval * 1.5, _POLL_BACKOFF_MAX)
             continue
         elif error == "slow_down":
-            interval += 5
+            current_interval = min(current_interval + 5, _POLL_BACKOFF_MAX)
         else:
             _pending_setups[setup_id] = {
                 "status": "failed",
@@ -394,6 +553,7 @@ async def _complete_device_code_oauth(
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_setup_status(setup_id: str = "") -> str:
     """Check if your account setup is complete. Call this after signing in via browser.
 
@@ -448,6 +608,7 @@ async def asibot_setup_status(setup_id: str = "") -> str:
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_whoami(ctx: Context) -> str:
     """Check which user you're authenticated as."""
     user_id, err = user_session.require_user(ctx)
@@ -460,6 +621,7 @@ async def asibot_whoami(ctx: Context) -> str:
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_rotate_key(ctx: Context) -> str:
     """Generate a new API key. The old key stops working immediately.
 
@@ -482,6 +644,7 @@ async def asibot_rotate_key(ctx: Context) -> str:
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
     """Connect a service by providing your credentials. One-time per service.
 
@@ -535,6 +698,7 @@ async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -> str:
     """Store credentials for a service. Called after asibot_connect explains what's needed.
 
@@ -569,6 +733,7 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_disconnect(service: str, ctx: Context) -> str:
     """Remove your credentials for a service.
 
@@ -585,6 +750,7 @@ async def asibot_disconnect(service: str, ctx: Context) -> str:
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_services(ctx: Context) -> str:
     """List all available services with connection status, enabled/disabled, and read/readwrite mode."""
     user_id, err = user_session.require_user(ctx)
@@ -623,6 +789,7 @@ async def asibot_services(ctx: Context) -> str:
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_enable(service: str, ctx: Context) -> str:
     """Enable a service connector.
 
@@ -639,6 +806,7 @@ async def asibot_enable(service: str, ctx: Context) -> str:
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_disable(service: str, ctx: Context) -> str:
     """Disable a service connector. Tools for this service will not respond.
 
@@ -655,6 +823,7 @@ async def asibot_disable(service: str, ctx: Context) -> str:
 
 
 @mcp.tool()
+@concurrency_limited()
 async def asibot_set_mode(service: str, mode: str, ctx: Context) -> str:
     """Set a service to read-only or read-write mode.
 
