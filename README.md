@@ -96,6 +96,20 @@ Claude walks you through Microsoft SSO sign-in. After that, just talk:
 
 ---
 
+## Security & Privacy
+
+**Your credentials, your access.** Asibot acts on your behalf using your own credentials. It cannot access anything you can't already access in each service. If you can't see a SharePoint file in your browser, Claude can't see it through Asibot either.
+
+**Credentials are encrypted and isolated.** Each user's service credentials are stored separately, encrypted at rest with Fernet symmetric encryption. No one — not admins, not other employees — can access your stored tokens. Admins can see usage metrics (which services you used, how often) but never credential contents.
+
+**Read-only by default.** Every service connection starts in read-only mode. Write access (creating issues, sending emails, updating records) must be explicitly enabled per service by the user.
+
+**Audit trail.** Every tool call is logged — who called what, when, which service, success/failure. Admins can review usage patterns and detect anomalies.
+
+**SSO-only authentication.** No passwords are stored or managed by Asibot. User identity comes from Microsoft SSO, and admin roles sync from Azure AD security groups.
+
+---
+
 ## Managing Connections
 
 Everything is managed through conversation:
@@ -105,6 +119,31 @@ Everything is managed through conversation:
 - **"Disconnect Salesforce"** — remove stored credentials
 - **"Set GitHub to read-only"** — control access levels per service
 - **"Rotate my API key"** — generate a new key, old one stops immediately
+
+---
+
+## FAQ
+
+**What can Asibot see?**
+Only what you can already access. Asibot uses your personal credentials for each service — it has exactly the same permissions you do.
+
+**Who can see my credentials?**
+No one. Credentials are encrypted per-user and never exposed — not to admins, not in logs, not to other employees.
+
+**What if SSO sign-in fails?**
+Make sure you're signing in with your company Microsoft account (not a personal one). If the device code expires, tell Claude "Set up my Asibot account" again to get a fresh code. Contact IT if your account is blocked from the Asibot app registration.
+
+**Can I use Asibot on my phone?**
+Yes, through claude.ai on mobile. The MCP integration works anywhere Claude does — Desktop, Code, and web.
+
+**What happens if I leave the company?**
+Your Asibot account and stored credentials are tied to your Microsoft identity. When your Azure AD account is disabled, your API key stops working and your encrypted credentials become inaccessible.
+
+**Can I connect to a service Asibot doesn't support?**
+Not directly, but you can use the Zapier connector to reach 6,000+ apps through Zapier actions.
+
+**Is my data sent to Anthropic?**
+Asibot runs on your company's own Azure infrastructure. Data from your SaaS tools flows from the service API → your Asibot server → Claude. Anthropic's standard data handling policies for your Claude Enterprise plan apply to the conversation content.
 
 ---
 
@@ -243,92 +282,9 @@ curl https://your-server/health
 
 ---
 
-## Configuration Reference
+## Reference
 
-All settings use the `ASIBOT_` prefix. Set via environment variables or `.env` file.
-
-<details>
-<summary><strong>Full environment variable reference</strong></summary>
-
-### Server
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASIBOT_TRANSPORT` | `stdio` | Set to `streamable-http` for server deployment |
-| `ASIBOT_HOST` | `0.0.0.0` | Listen address |
-| `ASIBOT_PORT` | `8080` | Listen port |
-| `ASIBOT_ALLOW_INSECURE_HTTP` | `false` | Allow HTTP without TLS (behind reverse proxy) |
-
-### Authentication & Roles
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASIBOT_MS365_TENANT_ID` | | Azure AD tenant ID |
-| `ASIBOT_MS365_CLIENT_ID` | | Azure AD app client ID |
-| `ASIBOT_ADMIN_GROUP_ID` | | Azure AD security group ID — members get `admin` role |
-| `ASIBOT_GITHUB_CLIENT_ID` | | GitHub OAuth App client ID |
-| `ASIBOT_GOOGLE_CLIENT_ID` | | Google OAuth client ID |
-| `ASIBOT_GOOGLE_CLIENT_SECRET` | | Google OAuth client secret |
-
-### Database & Sessions
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASIBOT_DATABASE_URL` | | PostgreSQL connection string |
-| `ASIBOT_DATABASE_READ_URL` | | Read replica URL (optional) |
-| `ASIBOT_PG_POOL_MIN_SIZE` | `10` | Minimum connection pool size |
-| `ASIBOT_PG_POOL_MAX_SIZE` | `100` | Maximum connection pool size |
-| `ASIBOT_SESSION_BACKEND` | `memory` | `memory` or `redis` |
-| `ASIBOT_REDIS_URL` | | Redis connection string |
-| `ASIBOT_SESSION_TTL` | `3600` | Session inactivity timeout (seconds) |
-| `ASIBOT_ABSOLUTE_SESSION_TTL` | `28800` | Hard session lifetime (8h) |
-
-### Rate Limiting & Concurrency
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASIBOT_GLOBAL_RATE_LIMIT_DEFAULT` | `200` | Requests/min per service (all users) |
-| `ASIBOT_GLOBAL_RATE_LIMITS` | `{}` | Per-service overrides (JSON) |
-| `ASIBOT_PER_USER_RATE_LIMIT_DEFAULT` | `30` | Requests/min per user per service |
-| `ASIBOT_MAX_CONCURRENT_REQUESTS` | `2000` | Global concurrent tool call cap |
-| `ASIBOT_MAX_CONCURRENT_PER_USER` | `10` | Per-user concurrent cap |
-| `ASIBOT_MAX_CONCURRENT_PER_SERVICE` | `200` | Per-service concurrent cap |
-
-### Resilience
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASIBOT_CIRCUIT_FAILURE_THRESHOLD` | `5` | Failures before circuit opens |
-| `ASIBOT_CIRCUIT_RECOVERY_TIMEOUT` | `60` | Seconds before half-open probe |
-| `ASIBOT_MAX_RETRIES` | `3` | Retry attempts for transient failures |
-
-### Monitoring
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASIBOT_METRICS_ENABLED` | `true` | Enable Prometheus metrics |
-| `ASIBOT_METRICS_HOST` | `127.0.0.1` | Metrics listen address |
-| `ASIBOT_METRICS_PORT` | `9090` | Metrics listen port |
-| `ASIBOT_METRICS_BEARER_TOKEN` | | Auth token for metrics endpoint |
-| `ASIBOT_AUDIT_RETENTION_DAYS` | `365` | Days to keep audit entries |
-
-### Secrets Management
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASIBOT_KMS_PROVIDER` | | `aws`, `vault`, or empty (local file) |
-| `ASIBOT_KMS_KEY_ID` | | AWS KMS key ARN or Vault path |
-| `ASIBOT_VAULT_ADDR` | | HashiCorp Vault address |
-| `ASIBOT_VAULT_TOKEN` | | Vault auth token |
-
-</details>
-
----
-
-## Operations
-
+- **Configuration**: [`docs/configuration.md`](docs/configuration.md) — all environment variables with defaults and descriptions
 - **Runbook**: [`deploy/runbook.md`](deploy/runbook.md) — health checks, alert triage, scaling, incident response
 - **Backup & Restore**: [`deploy/backup-restore.md`](deploy/backup-restore.md) — PostgreSQL dumps, master key backup, restore procedures
 - **Load Testing**: [`tests/load/`](tests/load/) — Locust-based load tests for capacity validation
-
-**Key backup warning:** The master encryption key at `~/.asibot/master.key` (or `/data/master.key` in Docker) encrypts all stored credentials. **If lost, all user credentials are unrecoverable.** Back it up separately. See [`deploy/backup-restore.md`](deploy/backup-restore.md).
