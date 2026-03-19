@@ -4,25 +4,35 @@ Asibot gives Claude direct access to 26 enterprise platforms your team already u
 
 ## Get Started
 
-Tell Claude:
-
-> **Set up Asibot and connect me to [service name].**
-
-That's it. Claude handles authentication, credential storage, and connection setup. You just talk.
-
-**Claude Desktop** — add to `claude_desktop_config.json` and restart:
+Add to your `claude_desktop_config.json` and restart Claude Desktop:
 
 ```json
-{ "mcpServers": { "asibot": { "command": "asibot-stdio" } } }
+{
+  "mcpServers": {
+    "asibot": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://asibot.yourcompany.com/mcp",
+        "--header",
+        "Authorization:Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
 ```
 
-**Claude Code** — one command:
+Don't have an API key yet? Leave the config out and tell Claude:
 
-```
-claude mcp add asibot asibot-stdio
-```
+> **Set up my Asibot account.**
 
-**Enterprise server** — your admin gives you a server URL and API key, or you say **"Set up my Asibot account"** and sign in with Microsoft SSO.
+Claude will walk you through Microsoft SSO sign-in and give you your API key and config snippet to paste in.
+
+> **Connect me to Jira.**
+
+> **Search SharePoint for the Q4 budget deck.**
+
+> **Get me a dashboard link.**
 
 ---
 
@@ -117,15 +127,16 @@ Everything is managed through conversation:
 
 ---
 
-## Enterprise Server Deployment
+## Server Deployment (Azure)
 
-This section is for admins deploying Asibot as a shared server for their organization.
+This section is for admins deploying the Asibot server on an Azure Linux VM.
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- A Microsoft Entra ID (Azure AD) app registration
-- TLS certificates (for production)
+- An Azure Linux VM (Standard D4as v5 recommended for 1000+ users)
+- Docker and Docker Compose installed on the VM
+- A Microsoft Entra ID app registration
+- TLS certificates (or use Azure Application Gateway for termination)
 
 ### 1. Azure AD App Registration
 
@@ -228,8 +239,8 @@ docker compose logs asibot | grep "dashboard"   # grab the dashboard URL
 ```
 ┌─────────────────┐     ┌──────────────┐     ┌──────────────┐
 │  Claude Desktop  │────▶│    Nginx     │────▶│    Asibot    │
-│  Claude Code     │     │  (TLS, rate  │     │  (FastMCP)   │
-│  Claude API      │     │   limiting)  │     │  port 8080   │
+│  (employees)     │     │  (TLS, rate  │     │  (FastMCP)   │
+│                  │     │   limiting)  │     │  port 8080   │
 └─────────────────┘     └──────────────┘     └──────┬───────┘
                                                      │
                               ┌───────────────┬──────┴──────────┐
@@ -246,7 +257,7 @@ docker compose logs asibot | grep "dashboard"   # grab the dashboard URL
 
 ### Key Design Choices
 
-**Authentication** — Microsoft SSO via device code flow. Users sign in once in the browser, the server polls for a token, creates an API key (`asb_...`), and returns a config snippet. Subsequent requests use the API key in the `Authorization` header, resolved to a user via a 3-level lookup: in-memory LRU cache (10K sessions) → SQLite/PostgreSQL → API key table.
+**Authentication** — Microsoft SSO via device code flow. Users sign in once in the browser, the server polls for a token, creates an API key (`asb_...`), and returns a config snippet for Claude Desktop. Subsequent requests use the API key in the `Authorization` header, resolved to a user via a 3-level lookup: in-memory LRU cache (10K sessions) → PostgreSQL → API key table.
 
 **Credential isolation** — Every user's credentials are stored separately, encrypted at rest with Fernet symmetric encryption. The master key lives at `~/.asibot/master.key` with 600 permissions. Optional external KMS (AWS KMS, HashiCorp Vault) for production.
 
@@ -277,7 +288,7 @@ All settings use the `ASIBOT_` prefix. Set via environment variables or `.env` f
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ASIBOT_TRANSPORT` | `stdio` | `stdio` (single-user) or `streamable-http` (multi-user) |
+| `ASIBOT_TRANSPORT` | `stdio` | Set to `streamable-http` for server deployment |
 | `ASIBOT_HOST` | `0.0.0.0` | Listen address |
 | `ASIBOT_PORT` | `8080` | Listen port |
 | `ASIBOT_ALLOW_INSECURE_HTTP` | `false` | Allow HTTP without TLS (behind reverse proxy) |
@@ -307,7 +318,7 @@ All settings use the `ASIBOT_` prefix. Set via environment variables or `.env` f
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ASIBOT_DATABASE_URL` | | PostgreSQL connection string (falls back to SQLite) |
+| `ASIBOT_DATABASE_URL` | | PostgreSQL connection string |
 | `ASIBOT_DATABASE_READ_URL` | | Read replica URL (optional) |
 | `ASIBOT_PG_POOL_MIN_SIZE` | `10` | Minimum connection pool size |
 | `ASIBOT_PG_POOL_MAX_SIZE` | `100` | Maximum connection pool size |
