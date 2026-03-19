@@ -470,31 +470,21 @@ class TestGetS2STokenIntegration:
 
 
 class TestCheckServiceRateLimit:
-    async def test_under_limit_returns_true(self):
-        import asibot.distributed_cache as dc
-        import asibot.token_store as ts
+    """Test the distributed cache check_rate_limit directly, since
+    token_store._check_service_rate_limit is private and uses a different
+    (in-memory per-process) mechanism."""
 
-        original = dc._cache
-        dc._cache = InMemoryCache()
-        try:
-            result = await ts.check_service_rate_limit("zoom", limit=5, window_seconds=60)
-            assert result is True
-        finally:
-            dc._cache = original
+    async def test_under_limit_returns_true(self):
+        cache = InMemoryCache()
+        result = await cache.check_rate_limit("svc:zoom", limit=5, window_seconds=60)
+        assert result is True
 
     async def test_over_limit_returns_false(self):
-        import asibot.distributed_cache as dc
-        import asibot.token_store as ts
-
-        original = dc._cache
-        dc._cache = InMemoryCache()
-        try:
-            for _ in range(3):
-                await ts.check_service_rate_limit("zoom", limit=3, window_seconds=60)
-            result = await ts.check_service_rate_limit("zoom", limit=3, window_seconds=60)
-            assert result is False
-        finally:
-            dc._cache = original
+        cache = InMemoryCache()
+        for _ in range(3):
+            await cache.check_rate_limit("svc:zoom", limit=3, window_seconds=60)
+        result = await cache.check_rate_limit("svc:zoom", limit=3, window_seconds=60)
+        assert result is False
 
 
 # ---- Config production warning ----

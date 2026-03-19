@@ -197,12 +197,13 @@ class TestSafeRequest:
         resp, err = await safe_request(
             client, "GET", "https://api.example.com/test",
             service="TestSvc", action="fetch",
+            max_retries=0,
         )
 
         assert resp is None
         assert "TestSvc fetch failed" in err
         assert "HTTP 503" in err
-        # safe_request makes exactly one attempt (no retries)
+        # safe_request with max_retries=0 makes exactly one attempt
         assert client.request.call_count == 1
 
     @pytest.mark.asyncio
@@ -298,19 +299,25 @@ class TestSafeRequest:
 
     @pytest.mark.asyncio
     async def test_rate_limited_returns_error_without_http_call(self):
-        """When global rate limiter blocks, no HTTP call should be made."""
-        from asibot.token_store import safe_request, global_rate_limiter
+        """When circuit breaker is open, no HTTP call should be made."""
+        from asibot.token_store import safe_request
+        from asibot.circuit_breaker import CircuitBreaker
 
         client = AsyncMock()
 
-        with patch.object(global_rate_limiter, "check", return_value=(False, 30)):
+        # Create a breaker that is already open (rejects all requests)
+        mock_breaker = CircuitBreaker("TestSvc", failure_threshold=1, recovery_timeout=300)
+        await mock_breaker.record_failure()  # Open the circuit
+        assert mock_breaker.state == "open"
+
+        with patch("asibot.token_store.get_breaker", return_value=mock_breaker):
             resp, err = await safe_request(
                 client, "GET", "/test",
                 service="TestSvc", action="fetch",
             )
 
         assert resp is None
-        assert "rate limit" in err.lower()
+        assert "circuit breaker" in err.lower()
         assert client.request.call_count == 0
 
 

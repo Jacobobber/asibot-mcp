@@ -2,7 +2,7 @@
 
 import sqlite3
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -147,7 +147,7 @@ class TestSessionCache:
         count = user_session.invalidate_user_sessions("nobody@example.com")
         assert count == 0
 
-    def test_expired_session_not_returned(self):
+    async def test_expired_session_not_returned(self):
         # Pre-populate with an expired session
         self.store.put_session("expired-sess", "old@example.com", ttl=3600, timestamp=time.time() - 7200)
 
@@ -157,10 +157,10 @@ class TestSessionCache:
         ctx.request_context.request.headers = headers
 
         with (
-            patch.object(user_session.auth, "list_users", return_value=[]),
+            patch.object(user_session.auth, "list_users", new_callable=AsyncMock, return_value=[]),
             patch.object(user_session, "_db_lookup_session", return_value=None),
         ):
-            uid, err = user_session.require_user(ctx)
+            uid, err = await user_session.require_user(ctx)
             assert uid is None
             assert "No users" in err
 
@@ -188,27 +188,27 @@ class TestRateLimiting:
         # Old failures should not count
         assert not user_session._is_rate_limited("test_pfx")
 
-    def test_invalid_api_key_records_failure(self):
+    async def test_invalid_api_key_records_failure(self):
         ctx = _mock_ctx(api_key="bad_key_123")
         with (
-            patch.object(user_session.auth, "get_user_by_key", return_value=None),
-            patch.object(user_session.auth, "list_users", return_value=[]),
+            patch.object(user_session.auth, "get_user_by_key", new_callable=AsyncMock, return_value=None),
+            patch.object(user_session.auth, "list_users", new_callable=AsyncMock, return_value=[]),
             patch.object(user_session, "_db_lookup_session", return_value=None),
         ):
-            uid, err = user_session.require_user(ctx)
+            uid, err = await user_session.require_user(ctx)
             assert uid is None
             assert "Invalid API key" in err
             key_pfx = user_session._key_prefix("bad_key_123")
             assert len(self.store._auth_failures.get(key_pfx, [])) == 1
 
-    def test_rate_limited_response(self):
+    async def test_rate_limited_response(self):
         # Fill up the failure list for a specific key prefix
         key_pfx = user_session._key_prefix("any_key_456")
         for _ in range(user_session._AUTH_FAIL_MAX):
             self.store.record_auth_failure(key_pfx)
 
         ctx = _mock_ctx(api_key="any_key_456")
-        uid, err = user_session.require_user(ctx)
+        uid, err = await user_session.require_user(ctx)
         assert uid is None
         assert "Too many failed" in err
 
@@ -230,29 +230,29 @@ class TestSingleUserAutoLogin:
     def teardown_method(self):
         user_session.set_store(InMemorySessionStore())
 
-    def test_auto_login_allowed_on_stdio(self):
+    async def test_auto_login_allowed_on_stdio(self):
         """Single-user auto-login should work on stdio transport."""
         ctx = _mock_ctx()  # no API key
         mock_user = {"user_id": "sole@example.com", "name": "Solo", "api_key": "key"}
         with (
             patch.object(settings, "transport", "stdio"),
-            patch.object(user_session.auth, "list_users", return_value=[mock_user]),
+            patch.object(user_session.auth, "list_users", new_callable=AsyncMock, return_value=[mock_user]),
             patch.object(user_session, "_db_lookup_session", return_value=None),
         ):
-            uid, err = user_session.require_user(ctx)
+            uid, err = await user_session.require_user(ctx)
             assert uid == "sole@example.com"
             assert err is None
 
-    def test_auto_login_blocked_on_http(self):
+    async def test_auto_login_blocked_on_http(self):
         """Single-user auto-login must NOT work on HTTP transport."""
         ctx = _mock_ctx()  # no API key
         mock_user = {"user_id": "sole@example.com", "name": "Solo", "api_key": "key"}
         with (
             patch.object(settings, "transport", "streamable-http"),
-            patch.object(user_session.auth, "list_users", return_value=[mock_user]),
+            patch.object(user_session.auth, "list_users", new_callable=AsyncMock, return_value=[mock_user]),
             patch.object(user_session, "_db_lookup_session", return_value=None),
         ):
-            uid, err = user_session.require_user(ctx)
+            uid, err = await user_session.require_user(ctx)
             assert uid is None
             assert "Authentication required" in err
 
@@ -264,7 +264,7 @@ class TestRequireUser:
     def teardown_method(self):
         user_session.set_store(InMemorySessionStore())
 
-    def test_valid_api_key_caches_session(self):
+    async def test_valid_api_key_caches_session(self):
         ctx = MagicMock()
         header_data = {
             "authorization": "Bearer test_key_123",
@@ -275,8 +275,8 @@ class TestRequireUser:
         ctx.request_context.request.headers = headers
 
         mock_user = {"user_id": "test@example.com", "name": "Test", "api_key": "test_key_123"}
-        with patch.object(user_session.auth, "get_user_by_key", return_value=mock_user):
-            uid, err = user_session.require_user(ctx)
+        with patch.object(user_session.auth, "get_user_by_key", new_callable=AsyncMock, return_value=mock_user):
+            uid, err = await user_session.require_user(ctx)
             assert uid == "test@example.com"
             assert err is None
             # Verify it was cached in the store
@@ -291,75 +291,83 @@ class TestSessionTTLConfig:
     """session_ttl should be read from settings instead of hardcoded."""
 
     def setup_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        user_session._get_store()._sessions.clear()
+        user_session._get_store()._auth_failures.clear()
 
     def teardown_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        user_session._get_store()._sessions.clear()
+        user_session._get_store()._auth_failures.clear()
 
     def test_custom_ttl_evicts_stale(self):
         """Sessions older than settings.session_ttl should be evicted."""
         now = time.time()
-        with patch.object(settings, "session_ttl", 60):
-            user_session._session_to_user["fresh"] = ("a@b.com", now - 30)
-            user_session._session_to_user["stale"] = ("c@d.com", now - 120)
-            user_session._evict_stale_sessions()
-            assert "fresh" in user_session._session_to_user
-            assert "stale" not in user_session._session_to_user
+        store = user_session._get_store()
+        store._default_ttl = 60  # Override TTL for this test
+        try:
+            store._sessions["fresh"] = ("a@b.com", now - 30)
+            store._sessions["stale"] = ("c@d.com", now - 120)
+            store.evict_expired()
+            assert "fresh" in store._sessions
+            assert "stale" not in store._sessions
+        finally:
+            store._default_ttl = 3600
 
-    def test_custom_ttl_in_require_user(self):
+    async def test_custom_ttl_in_require_user(self):
         """require_user should respect settings.session_ttl for session expiry."""
         now = time.time()
-        # Session is 90s old; default TTL=3600 would keep it, custom TTL=60 expires it
-        user_session._session_to_user["sess-x"] = ("user@example.com", now - 90)
+        store = user_session._get_store()
+        store._default_ttl = 60  # Override TTL for this test
+        store._sessions["sess-x"] = ("user@example.com", now - 90)
 
         ctx = _mock_ctx(session_id="sess-x")
-        with (
-            patch.object(settings, "session_ttl", 60),
-            patch.object(user_session.auth, "list_users", return_value=[]),
-            patch.object(user_session, "_db_lookup_session", return_value=None),
-        ):
-            uid, err = user_session.require_user(ctx)
-            assert uid is None  # expired with TTL=60
+        try:
+            with (
+                patch.object(settings, "session_ttl", 60),
+                patch.object(user_session.auth, "list_users", new_callable=AsyncMock, return_value=[]),
+                patch.object(user_session, "_db_lookup_session", return_value=None),
+            ):
+                uid, err = await user_session.require_user(ctx)
+                assert uid is None  # expired with TTL=60
+        finally:
+            store._default_ttl = 3600
 
 
 class TestDBFallback:
     """Test that require_user falls back to the database when session not in memory."""
 
     def setup_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        user_session._get_store()._sessions.clear()
+        user_session._get_store()._auth_failures.clear()
 
     def teardown_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        user_session._get_store()._sessions.clear()
+        user_session._get_store()._auth_failures.clear()
 
-    def test_db_fallback_when_not_in_memory(self):
+    async def test_db_fallback_when_not_in_memory(self):
         """If session not in memory, check DB and restore to cache."""
         ctx = _mock_ctx(session_id="db-sess-1")
         with patch.object(user_session, "_db_lookup_session", return_value="alice@example.com"):
-            uid, err = user_session.require_user(ctx)
+            uid, err = await user_session.require_user(ctx)
             assert uid == "alice@example.com"
             assert err is None
             # Should now be in memory cache
-            assert "db-sess-1" in user_session._session_to_user
-            cached_uid, _ = user_session._session_to_user["db-sess-1"]
+            assert "db-sess-1" in user_session._get_store()._sessions
+            cached_uid, _ = user_session._get_store()._sessions["db-sess-1"]
             assert cached_uid == "alice@example.com"
 
-    def test_db_fallback_returns_none_when_not_found(self):
+    async def test_db_fallback_returns_none_when_not_found(self):
         """If session not in memory or DB, proceed to API key auth."""
         ctx = _mock_ctx(session_id="unknown-sess", api_key="valid_key_000")
         mock_user = {"user_id": "bob@example.com", "name": "Bob"}
         with (
             patch.object(user_session, "_db_lookup_session", return_value=None),
-            patch.object(user_session.auth, "get_user_by_key", return_value=mock_user),
+            patch.object(user_session.auth, "get_user_by_key", new_callable=AsyncMock, return_value=mock_user),
         ):
-            uid, err = user_session.require_user(ctx)
+            uid, err = await user_session.require_user(ctx)
             assert uid == "bob@example.com"
             assert err is None
 
-    def test_session_survives_cache_clear(self, tmp_path):
+    async def test_session_survives_cache_clear(self, tmp_path):
         """Session loaded from DB survives in-memory cache being cleared."""
         db_file = tmp_path / "asibot.db"
         conn = sqlite3.connect(str(db_file))
@@ -385,11 +393,11 @@ class TestDBFallback:
         with patch.object(user_session, "_db_path", return_value=str(db_file)):
             # Memory cache is empty -- verify DB fallback works
             ctx = _mock_ctx(session_id="persist-sess")
-            uid, err = user_session.require_user(ctx)
+            uid, err = await user_session.require_user(ctx)
             assert uid == "carol@example.com"
             assert err is None
 
-    def test_expired_db_session_not_returned(self, tmp_path):
+    async def test_expired_db_session_not_returned(self, tmp_path):
         """Expired sessions in DB should not be returned."""
         db_file = tmp_path / "asibot.db"
         conn = sqlite3.connect(str(db_file))
@@ -413,10 +421,10 @@ class TestDBFallback:
 
         with (
             patch.object(user_session, "_db_path", return_value=str(db_file)),
-            patch.object(user_session.auth, "list_users", return_value=[]),
+            patch.object(user_session.auth, "list_users", new_callable=AsyncMock, return_value=[]),
         ):
             ctx = _mock_ctx(session_id="old-sess")
-            uid, err = user_session.require_user(ctx)
+            uid, err = await user_session.require_user(ctx)
             assert uid is None
 
 
@@ -424,27 +432,27 @@ class TestInvalidationClearsBoth:
     """Invalidation should clear both in-memory and DB sessions."""
 
     def setup_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        user_session._get_store()._sessions.clear()
+        user_session._get_store()._auth_failures.clear()
 
     def teardown_method(self):
-        user_session._session_to_user.clear()
-        user_session._auth_failures.clear()
+        user_session._get_store()._sessions.clear()
+        user_session._get_store()._auth_failures.clear()
 
     def test_invalidation_clears_memory(self):
         """In-memory sessions are cleared on invalidation."""
         now = time.time()
-        user_session._session_to_user["s1"] = ("alice@example.com", now)
-        user_session._session_to_user["s2"] = ("bob@example.com", now)
+        user_session._get_store()._sessions["s1"] = ("alice@example.com", now)
+        user_session._get_store()._sessions["s2"] = ("bob@example.com", now)
         count = user_session.invalidate_user_sessions("alice@example.com")
         assert count == 1
-        assert "s1" not in user_session._session_to_user
-        assert "s2" in user_session._session_to_user
+        assert "s1" not in user_session._get_store()._sessions
+        assert "s2" in user_session._get_store()._sessions
 
     def test_invalidation_schedules_db_delete(self):
         """invalidate_user_sessions should call _schedule_db_delete_user."""
         now = time.time()
-        user_session._session_to_user["s1"] = ("alice@example.com", now)
+        user_session._get_store()._sessions["s1"] = ("alice@example.com", now)
         with patch.object(user_session, "_schedule_db_delete_user") as mock_delete:
             user_session.invalidate_user_sessions("alice@example.com")
             mock_delete.assert_called_once_with("alice@example.com")
@@ -454,10 +462,10 @@ class TestLoadSessionsFromDB:
     """Test startup loading of sessions from the database."""
 
     def setup_method(self):
-        user_session._session_to_user.clear()
+        user_session._get_store()._sessions.clear()
 
     def teardown_method(self):
-        user_session._session_to_user.clear()
+        user_session._get_store()._sessions.clear()
 
     @pytest.mark.asyncio
     async def test_load_sessions_populates_memory(self):
@@ -469,9 +477,9 @@ class TestLoadSessionsFromDB:
         with patch("asibot.db.load_active_sessions", return_value=mock_sessions):
             count = await user_session.load_sessions_from_db()
             assert count == 2
-            assert "sess-a" in user_session._session_to_user
-            assert "sess-b" in user_session._session_to_user
-            uid_a, _ = user_session._session_to_user["sess-a"]
+            assert "sess-a" in user_session._get_store()._sessions
+            assert "sess-b" in user_session._get_store()._sessions
+            uid_a, _ = user_session._get_store()._sessions["sess-a"]
             assert uid_a == "alice@example.com"
 
     @pytest.mark.asyncio
@@ -492,4 +500,4 @@ class TestLoadSessionsFromDB:
         ):
             count = await user_session.load_sessions_from_db()
             assert count == 10
-            assert len(user_session._session_to_user) == 10
+            assert len(user_session._get_store()._sessions) == 10

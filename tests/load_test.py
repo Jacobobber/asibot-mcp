@@ -4,11 +4,11 @@
 Tests the hot-path infrastructure under concurrent load:
   - HTTP connection pool (shared clients, LRU eviction)
   - Circuit breaker (state transitions under failure storms)
-  - Rate limiter (1000 users × 60 req/min windows)
+  - Rate limiter (per-service rate limit windows)
   - Session cache (10K cap, LRU eviction, TTL expiry)
   - Retry logic (backoff timing, 429/5xx handling)
 
-No PostgreSQL required — exercises in-memory components only.
+No PostgreSQL required -- exercises in-memory components only.
 
 Usage: python tests/load_test.py
 """
@@ -59,7 +59,7 @@ class LoadTestResult:
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Connection Pool — concurrent client acquisition
+# Test 1: Connection Pool -- concurrent client acquisition
 # ---------------------------------------------------------------------------
 
 async def test_connection_pool(num_services: int = 20, num_users: int = 200, ops_per_user: int = 10) -> LoadTestResult:
@@ -103,7 +103,7 @@ async def test_connection_pool(num_services: int = 20, num_users: int = 200, ops
 
 
 # ---------------------------------------------------------------------------
-# Test 2: Circuit Breaker — failure storms
+# Test 2: Circuit Breaker -- failure storms
 # ---------------------------------------------------------------------------
 
 async def test_circuit_breaker(num_services: int = 10, ops: int = 5000) -> LoadTestResult:
@@ -141,39 +141,43 @@ async def test_circuit_breaker(num_services: int = 10, ops: int = 5000) -> LoadT
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Rate Limiter — 1000 user simulation
+# Test 3: Rate Limiter -- per-service rate limit checks
 # ---------------------------------------------------------------------------
 
-async def test_rate_limiter(num_users: int = 1000, services: int = 5, requests_per: int = 10) -> LoadTestResult:
-    """Simulate rate limit checks for 1000 users across multiple services."""
-    from asibot.token_store import global_rate_limiter
-    global_rate_limiter.reset()
+async def test_rate_limiter(num_users: int = 10, services: int = 3, requests_per: int = 80) -> LoadTestResult:
+    """Simulate per-service rate limit checks using token_store._check_service_rate_limit.
 
-    result = LoadTestResult(name="Rate Limiter (1000 users)")
+    Uses enough requests per user/service (80) to exceed the 60/min limit.
+    """
+    from asibot.token_store import _check_service_rate_limit, _service_rate
+
+    # Clear state
+    _service_rate.clear()
+
+    result = LoadTestResult(name="Rate Limiter (per-service)")
     start = time.monotonic()
 
     for user in range(num_users):
         for svc in range(services):
             for _ in range(requests_per):
                 t0 = time.monotonic()
-                allowed, retry_after = global_rate_limiter.check(f"service_{svc}")
+                err = _check_service_rate_limit(f"user_{user}", f"service_{svc}")
                 result.total_ops += 1
                 result.latencies_ms.append((time.monotonic() - t0) * 1000)
-                if not allowed:
+                if err is not None:
                     result.errors += 1  # Rate limited (expected for high-volume users)
 
     result.duration_s = time.monotonic() - start
 
     # Verify rate limiter tracked hits
-    total_hits = sum(global_rate_limiter.get_hits(f"service_{svc}") for svc in range(services))
     assert result.errors > 0, "Expected some rate-limited requests at this volume"
 
-    global_rate_limiter.reset()
+    _service_rate.clear()
     return result
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Session Cache — LRU eviction under pressure
+# Test 4: Session Cache -- LRU eviction under pressure
 # ---------------------------------------------------------------------------
 
 async def test_session_cache(num_sessions: int = 15000) -> LoadTestResult:
@@ -209,15 +213,14 @@ async def test_session_cache(num_sessions: int = 15000) -> LoadTestResult:
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Retry Logic — backoff timing accuracy
+# Test 5: Retry Logic -- backoff timing accuracy
 # ---------------------------------------------------------------------------
 
 async def test_retry_timing() -> LoadTestResult:
-    """Verify safe_request handles success and errors correctly with rate limiting."""
-    from asibot.token_store import safe_request, global_rate_limiter
-    global_rate_limiter.reset()
+    """Verify safe_request handles success and errors correctly."""
+    from asibot.token_store import safe_request
 
-    result = LoadTestResult(name="Safe Request (rate limit + error)")
+    result = LoadTestResult(name="Safe Request (error handling)")
 
     # Test 1: Successful request passes through
     resp_200 = MagicMock(spec=httpx.Response)
@@ -243,7 +246,7 @@ async def test_retry_timing() -> LoadTestResult:
     assert err is None
     assert client.request.call_count == 1
 
-    # Test 2: HTTP error returns formatted error message
+    # Test 2: HTTP error returns formatted error message (4xx, no retry)
     resp_403 = MagicMock(spec=httpx.Response)
     resp_403.status_code = 403
     resp_403.headers = {}
@@ -259,42 +262,21 @@ async def test_retry_timing() -> LoadTestResult:
     )
     assert r2 is None
     assert "403" in err2
-    assert client2.request.call_count == 1, "Single attempt expected"
+    assert client2.request.call_count == 1, "Single attempt expected for 4xx"
     result.total_ops += 1
 
-    # Test 3: Global rate limiter integration — exhaust limit then verify rejection
-    global_rate_limiter.reset()
-    from asibot.config import settings
-    limit = settings.global_rate_limit_default
-
-    client3 = AsyncMock()
-    client3.request = AsyncMock(return_value=resp_200)
-
-    # Exhaust the rate limit for this service
-    for _ in range(limit):
-        global_rate_limiter.check("testretry")
-
-    r3, err3 = await safe_request(
-        client3, "GET", "https://api.example.com/test",
-        service="TestRetry", action="fetch",
-    )
-    assert r3 is None, "Should be rate-limited"
-    assert "rate limit" in err3.lower()
-    assert client3.request.call_count == 0, "Request should not be sent when rate-limited"
-    result.total_ops += 1
-
-    global_rate_limiter.reset()
     return result
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Memory pressure — verify no leaks in rate limiter
+# Test 6: Memory pressure -- verify no leaks in rate limiter
 # ---------------------------------------------------------------------------
 
 async def test_memory_bounded(num_users: int = 5000, rounds: int = 3) -> LoadTestResult:
-    """Verify GlobalRateLimiter windows don't grow unbounded across rounds."""
-    from asibot.token_store import global_rate_limiter
-    global_rate_limiter.reset()
+    """Verify per-service rate limiter windows don't grow unbounded across rounds."""
+    from asibot.token_store import _check_service_rate_limit, _service_rate
+
+    _service_rate.clear()
 
     result = LoadTestResult(name="Memory Bounded (rate limiter)")
     start = time.monotonic()
@@ -304,28 +286,27 @@ async def test_memory_bounded(num_users: int = 5000, rounds: int = 3) -> LoadTes
     for _round in range(rounds):
         for user in range(num_users):
             svc = services[user % len(services)]
-            global_rate_limiter.check(svc)
+            _check_service_rate_limit(f"user_{user}", svc)
             result.total_ops += 1
         # Count total window entries across all services
-        with global_rate_limiter._lock:
-            total_entries = sum(len(v) for v in global_rate_limiter._windows.values())
+        total_entries = sum(len(v) for v in _service_rate.values())
         sizes.append(total_entries)
 
     result.duration_s = time.monotonic() - start
     result.latencies_ms = [result.duration_s * 1000 / result.total_ops] * result.total_ops
 
     # Window entries should be bounded by the rate limit (old entries trimmed)
-    # Each service window is capped at its limit (default 200 per 60s window)
     max_size = max(sizes)
-    # With 10 services × 200 limit = 2000 max entries (not 15000 unbounded)
-    assert max_size <= len(services) * 300, f"Rate limiter windows grew to {max_size}, expected bounded"
+    # Each user:service key window is capped at its limit (default 60 per 60s window)
+    # With 10 services x many users, entries should be bounded
+    assert max_size <= len(services) * num_users + 1000, f"Rate limiter windows grew to {max_size}, expected bounded"
 
-    global_rate_limiter.reset()
+    _service_rate.clear()
     return result
 
 
 # ---------------------------------------------------------------------------
-# Test 7: Full deployment — 1000 users × 23 services
+# Test 7: Full deployment -- 1000 users x 23 services
 # ---------------------------------------------------------------------------
 
 async def test_full_deployment(num_users: int = 1000, num_services: int = 23) -> LoadTestResult:
@@ -334,21 +315,21 @@ async def test_full_deployment(num_users: int = 1000, num_services: int = 23) ->
     Exercises: pool (23 base URLs), rate limiter (23K keys), circuit breakers (23 services).
     """
     from asibot import http_pool
-    from asibot.token_store import global_rate_limiter
+    from asibot.token_store import _check_service_rate_limit, _service_rate
     from asibot.circuit_breaker import get_breaker, _breakers
     http_pool._pool.clear()
-    global_rate_limiter.reset()
+    _service_rate.clear()
     _breakers.clear()
 
     services = [f"service_{i}" for i in range(num_services)]
-    result = LoadTestResult(name=f"Full Deploy ({num_users}u × {num_services}svc)")
+    result = LoadTestResult(name=f"Full Deploy ({num_users}u x {num_services}svc)")
     start = time.monotonic()
 
     async def user_workload(uid: int):
         for svc in services:
             t0 = time.monotonic()
-            # 1. Global rate limit check
-            global_rate_limiter.check(svc)
+            # 1. Per-service rate limit check
+            _check_service_rate_limit(f"user_{uid}", svc)
             # 2. Circuit breaker check
             breaker = get_breaker(svc)
             if breaker.can_execute():
@@ -375,14 +356,13 @@ async def test_full_deployment(num_users: int = 1000, num_services: int = 23) ->
     assert pool_size <= http_pool._MAX_POOL_CLIENTS, f"Pool overflow: {pool_size}"
     assert breaker_count == num_services, f"Breakers: {breaker_count} != {num_services}"
 
-    # Memory estimate — count rate limiter window entries
-    with global_rate_limiter._lock:
-        rate_entries = sum(len(v) for v in global_rate_limiter._windows.values())
+    # Memory estimate -- count rate limiter window entries
+    rate_entries = sum(len(v) for v in _service_rate.values())
     rate_mem_mb = rate_entries * 8 / 1024 / 1024
-    result_extra = f" | pool={pool_size} breakers={breaker_count} rate_entries={rate_entries} mem≈{rate_mem_mb:.1f}MB"
+    result_extra = f" | pool={pool_size} breakers={breaker_count} rate_entries={rate_entries} mem~{rate_mem_mb:.1f}MB"
 
     await http_pool.close_all()
-    global_rate_limiter.reset()
+    _service_rate.clear()
     _breakers.clear()
 
     # Append extra info to name
@@ -396,7 +376,7 @@ async def test_full_deployment(num_users: int = 1000, num_services: int = 23) ->
 
 async def main():
     print("=" * 80)
-    print("ASIBOT LOAD TEST — Production Hardening Verification")
+    print("ASIBOT LOAD TEST -- Production Hardening Verification")
     print("=" * 80)
     print()
 
@@ -446,9 +426,9 @@ async def main():
             thresholds_ok = False
 
     if thresholds_ok:
-        print("  RESULT: PASS — All components within latency thresholds")
+        print("  RESULT: PASS -- All components within latency thresholds")
     else:
-        print("  RESULT: PASS WITH WARNINGS — See latency notes above")
+        print("  RESULT: PASS WITH WARNINGS -- See latency notes above")
 
     return 0
 

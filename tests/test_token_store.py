@@ -1,9 +1,10 @@
 """Tests for credential storage and permission enforcement."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 
 from asibot import crypto, token_store, user_session
 from asibot.config import settings
@@ -102,88 +103,95 @@ class TestPreferences:
 
 
 class TestPermissions:
-    def test_check_permission_enabled_read(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_check_permission_enabled_read(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)
         ctx = _mock_ctx()
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
-            patch.object(user_session, "require_user", return_value=("testuser@example.com", None)),
+            patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=("testuser@example.com", None)),
         ):
             token_store.set_service_prefs("testuser@example.com", "github", enabled=True, mode="read")
-            uid, err = token_store.check_permission(ctx, "github", "read")
+            uid, err = await token_store.check_permission(ctx, "github", "read")
             assert uid == "testuser@example.com"
             assert err is None
 
-    def test_check_permission_disabled(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_check_permission_disabled(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)
         ctx = _mock_ctx()
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
-            patch.object(user_session, "require_user", return_value=("testuser@example.com", None)),
+            patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=("testuser@example.com", None)),
         ):
             token_store.set_service_prefs("testuser@example.com", "github", enabled=False, mode="read")
-            uid, err = token_store.check_permission(ctx, "github", "read")
+            uid, err = await token_store.check_permission(ctx, "github", "read")
             assert uid is None
             assert "disabled" in err
 
-    def test_check_permission_write_blocked_in_read_mode(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_check_permission_write_blocked_in_read_mode(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)
         ctx = _mock_ctx()
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
-            patch.object(user_session, "require_user", return_value=("testuser@example.com", None)),
+            patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=("testuser@example.com", None)),
         ):
             token_store.set_service_prefs("testuser@example.com", "github", enabled=True, mode="read")
-            uid, err = token_store.check_permission(ctx, "github", "write")
+            uid, err = await token_store.check_permission(ctx, "github", "write")
             assert uid is None
             assert "read-only" in err
 
-    def test_check_permission_write_allowed_in_readwrite(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_check_permission_write_allowed_in_readwrite(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)
         ctx = _mock_ctx()
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
-            patch.object(user_session, "require_user", return_value=("testuser@example.com", None)),
+            patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=("testuser@example.com", None)),
         ):
             token_store.set_service_prefs("testuser@example.com", "github", enabled=True, mode="readwrite")
-            uid, err = token_store.check_permission(ctx, "github", "write")
+            uid, err = await token_store.check_permission(ctx, "github", "write")
             assert uid == "testuser@example.com"
             assert err is None
 
-    def test_check_permission_unauthenticated(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_check_permission_unauthenticated(self, tmp_path):
         ctx = _mock_ctx()
-        with _patch_crypto(tmp_path), patch.object(user_session, "require_user", return_value=(None, "Not authenticated")):
-            uid, err = token_store.check_permission(ctx, "github", "read")
+        with _patch_crypto(tmp_path), patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=(None, "Not authenticated")):
+            uid, err = await token_store.check_permission(ctx, "github", "read")
             assert uid is None
             assert "Not authenticated" in err
 
-    def test_require_service_no_credentials(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_require_service_no_credentials(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)
         ctx = _mock_ctx()
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
-            patch.object(user_session, "require_user", return_value=("testuser@example.com", None)),
+            patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=("testuser@example.com", None)),
         ):
-            client, uid, err = token_store.require_service(ctx, "github", lambda c: None, "read")
+            client, uid, err = await token_store.require_service(ctx, "github", lambda c: None, "read")
             assert client is None
             assert "Not connected" in err
 
-    def test_require_service_success(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_require_service_success(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)
         ctx = _mock_ctx()
         mock_client = MagicMock()
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
-            patch.object(user_session, "require_user", return_value=("testuser@example.com", None)),
+            patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=("testuser@example.com", None)),
         ):
             token_store.set_credentials("testuser@example.com", "github", {"token": "ghp_xxx"})
-            client, uid, err = token_store.require_service(ctx, "github", lambda c: mock_client, "read")
+            client, uid, err = await token_store.require_service(ctx, "github", lambda c: mock_client, "read")
             assert client is mock_client
             assert uid == "testuser@example.com"
             assert err is None
@@ -199,69 +207,76 @@ class TestServiceSchemas:
 
 
 class TestClientSpec:
-    def test_build_bearer_client(self):
+    @pytest.mark.asyncio
+    async def test_build_bearer_client(self):
         spec = token_store.ClientSpec(required_fields=("token",))
-        client = token_store.build_client(spec, {"token": "abc123"})
+        client = await token_store.build_client(spec, {"token": "abc123"})
         assert client is not None
-        assert client.headers["Authorization"] == "Bearer abc123"
+        assert client._auth_headers["Authorization"] == "Bearer abc123"
 
-    def test_build_bearer_missing_field(self):
+    @pytest.mark.asyncio
+    async def test_build_bearer_missing_field(self):
         spec = token_store.ClientSpec(required_fields=("token",))
-        assert token_store.build_client(spec, {}) is None
-        assert token_store.build_client(spec, {"token": ""}) is None
+        assert await token_store.build_client(spec, {}) is None
+        assert await token_store.build_client(spec, {"token": ""}) is None
 
-    def test_build_basic_client(self):
+    @pytest.mark.asyncio
+    async def test_build_basic_client(self):
         spec = token_store.ClientSpec(
             required_fields=("email", "api_token", "domain"),
             auth_type="basic",
             base_url="https://{domain}/api",
         )
-        client = token_store.build_client(spec, {"email": "a@b.com", "api_token": "tk", "domain": "example.com"})
+        client = await token_store.build_client(spec, {"email": "a@b.com", "api_token": "tk", "domain": "example.com"})
         assert client is not None
-        assert str(client.base_url).rstrip("/") == "https://example.com/api"
+        assert str(client._client.base_url).rstrip("/") == "https://example.com/api"
 
-    def test_build_basic_with_suffix(self):
+    @pytest.mark.asyncio
+    async def test_build_basic_with_suffix(self):
         spec = token_store.ClientSpec(
             required_fields=("email", "api_token", "subdomain"),
             auth_type="basic",
             basic_user_suffix="/token",
             base_url="https://{subdomain}.zendesk.com/api/v2",
         )
-        client = token_store.build_client(
+        client = await token_store.build_client(
             spec, {"email": "a@b.com", "api_token": "tk", "subdomain": "myco"}
         )
         assert client is not None
 
-    def test_build_api_key_client(self):
+    @pytest.mark.asyncio
+    async def test_build_api_key_client(self):
         spec = token_store.ClientSpec(
             required_fields=("api_key",),
             auth_type="api_key",
             api_key_header="X-API-Key",
             api_key_field="api_key",
         )
-        client = token_store.build_client(spec, {"api_key": "sk_123"})
+        client = await token_store.build_client(spec, {"api_key": "sk_123"})
         assert client is not None
-        assert client.headers["X-API-Key"] == "sk_123"
+        assert client._auth_headers["X-API-Key"] == "sk_123"
 
-    def test_build_none_auth_client(self):
+    @pytest.mark.asyncio
+    async def test_build_none_auth_client(self):
         spec = token_store.ClientSpec(
             required_fields=("account_id", "client_id", "client_secret"),
             auth_type="none",
         )
-        client = token_store.build_client(
+        client = await token_store.build_client(
             spec, {"account_id": "a", "client_id": "b", "client_secret": "c"}
         )
         assert client is not None
-        assert "Authorization" not in client.headers
+        assert "Authorization" not in client._auth_headers
 
-    def test_build_with_extra_headers(self):
+    @pytest.mark.asyncio
+    async def test_build_with_extra_headers(self):
         spec = token_store.ClientSpec(
             required_fields=("token",),
             headers={"Accept": "application/json", "X-Custom": "val"},
         )
-        client = token_store.build_client(spec, {"token": "t"})
-        assert client.headers["Accept"] == "application/json"
-        assert client.headers["X-Custom"] == "val"
+        client = await token_store.build_client(spec, {"token": "t"})
+        assert client._client.headers["Accept"] == "application/json"
+        assert client._client.headers["X-Custom"] == "val"
 
     def test_all_registered_specs_valid(self):
         """Every spec in CLIENT_SPECS should have at least one required field."""
@@ -284,45 +299,48 @@ class TestClientSpec:
 
 
 class TestRequireServiceWithSpec:
-    def test_spec_based_require_service(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_spec_based_require_service(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)
         ctx = _mock_ctx()
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
-            patch.object(user_session, "require_user", return_value=("testuser@example.com", None)),
+            patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=("testuser@example.com", None)),
         ):
             token_store.set_credentials("testuser@example.com", "github", {"token": "ghp_test"})
-            client, uid, err = token_store.require_service(ctx, "github", level="read")
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
             assert client is not None
             assert uid == "testuser@example.com"
             assert err is None
-            assert client.headers["Authorization"] == "Bearer ghp_test"
+            assert client._auth_headers["Authorization"] == "Bearer ghp_test"
 
-    def test_spec_based_no_spec_registered(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_spec_based_no_spec_registered(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)
         ctx = _mock_ctx()
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
-            patch.object(user_session, "require_user", return_value=("testuser@example.com", None)),
+            patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=("testuser@example.com", None)),
         ):
             token_store.set_credentials("testuser@example.com", "unknown_svc", {"token": "x"})
-            client, uid, err = token_store.require_service(ctx, "unknown_svc", level="read")
+            client, uid, err = await token_store.require_service(ctx, "unknown_svc", level="read")
             assert client is None
             assert "No client configuration" in err
 
-    def test_legacy_callback_still_works(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_legacy_callback_still_works(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)
         ctx = _mock_ctx()
         mock_client = MagicMock()
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
-            patch.object(user_session, "require_user", return_value=("testuser@example.com", None)),
+            patch.object(user_session, "require_user", new_callable=AsyncMock, return_value=("testuser@example.com", None)),
         ):
             token_store.set_credentials("testuser@example.com", "github", {"token": "ghp_xxx"})
-            client, uid, err = token_store.require_service(ctx, "github", lambda c: mock_client, "read")
+            client, uid, err = await token_store.require_service(ctx, "github", lambda c: mock_client, "read")
             assert client is mock_client
             assert err is None
 
@@ -398,20 +416,17 @@ class TestApplyDefaults:
             assert creds["org"] == "custom-org"  # user wins
 
     def test_atlassian_domain_and_email_injected(self, tmp_path):
-        user_dir = _setup_user_dir(tmp_path)
+        user_dir = _setup_user_dir(tmp_path, "alice@myco.com")
         with (
             _patch_crypto(tmp_path),
             patch.object(user_session, "get_user_data_dir", return_value=user_dir),
             patch.object(settings, "atlassian_domain", "myco.atlassian.net"),
         ):
-            from asibot import auth as real_auth
-            with patch.object(real_auth, "_users", {}), patch.object(real_auth, "_store_path", tmp_path / "users.json"):
-                real_auth.create_user("alice@myco.com", "Alice")
-                token_store.set_credentials("alice@myco.com", "atlassian", {"api_token": "tok123"})
-                creds = token_store.get_credentials("alice@myco.com", "atlassian")
-                assert creds["api_token"] == "tok123"
-                assert creds["domain"] == "myco.atlassian.net"
-                assert creds["email"] == "alice@myco.com"
+            token_store.set_credentials("alice@myco.com", "atlassian", {"api_token": "tok123"})
+            creds = token_store.get_credentials("alice@myco.com", "atlassian")
+            assert creds["api_token"] == "tok123"
+            assert creds["domain"] == "myco.atlassian.net"
+            assert creds["email"] == "alice@myco.com"
 
     def test_salesforce_instance_url_injected(self, tmp_path):
         user_dir = _setup_user_dir(tmp_path)

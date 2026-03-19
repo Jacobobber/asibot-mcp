@@ -1628,8 +1628,6 @@ class TestPaylocitySearchEmployees:
 
     @pytest.mark.asyncio
     async def test_search_success(self):
-        from asibot.connectors.paylocity import _token_cache
-        _token_cache.clear()
         resp = _mock_response(200, json_data=None)
         resp.json.return_value = [
             {"employeeId": "E001", "firstName": "Alice", "lastName": "Smith", "statusType": "Active"},
@@ -1644,12 +1642,9 @@ class TestPaylocitySearchEmployees:
         ):
             result = await self.tools["paylocity_search_employees"]("Alice", ctx)
         assert "Alice Smith" in result
-        _token_cache.clear()
 
     @pytest.mark.asyncio
     async def test_search_empty(self):
-        from asibot.connectors.paylocity import _token_cache
-        _token_cache.clear()
         resp = _mock_response(200, json_data=None)
         resp.json.return_value = []
         client = _mock_client(resp)
@@ -1662,7 +1657,6 @@ class TestPaylocitySearchEmployees:
         ):
             result = await self.tools["paylocity_search_employees"]("nonexistent", ctx)
         assert "No employees found" in result
-        _token_cache.clear()
 
     @pytest.mark.asyncio
     async def test_search_empty_query(self):
@@ -1679,8 +1673,6 @@ class TestPaylocityGetPayStatement:
 
     @pytest.mark.asyncio
     async def test_get_pay_statement_success(self):
-        from asibot.connectors.paylocity import _token_cache
-        _token_cache.clear()
         resp = _mock_response(200, {
             "payStatement": [
                 {"checkDate": "2024-01-15", "grossPay": 5000.00, "netPay": 3500.00},
@@ -1698,7 +1690,6 @@ class TestPaylocityGetPayStatement:
         assert "2024-01-15" in result
         assert "5000" in result
         assert "3500" in result
-        _token_cache.clear()
 
     @pytest.mark.asyncio
     async def test_get_pay_statement_empty_id(self):
@@ -1715,8 +1706,6 @@ class TestPaylocityListDepartments:
 
     @pytest.mark.asyncio
     async def test_list_departments_success(self):
-        from asibot.connectors.paylocity import _token_cache
-        _token_cache.clear()
         resp = _mock_response(200, json_data=None)
         resp.json.return_value = [
             {"code": "ENG", "description": "Engineering"},
@@ -1735,12 +1724,9 @@ class TestPaylocityListDepartments:
         assert "Engineering" in result
         assert "MKT" in result
         assert "Marketing" in result
-        _token_cache.clear()
 
     @pytest.mark.asyncio
     async def test_list_departments_empty(self):
-        from asibot.connectors.paylocity import _token_cache
-        _token_cache.clear()
         resp = _mock_response(200, json_data=None)
         resp.json.return_value = []
         client = _mock_client(resp)
@@ -1753,4 +1739,3 @@ class TestPaylocityListDepartments:
         ):
             result = await self.tools["paylocity_list_departments"](ctx)
         assert "No departments found" in result
-        _token_cache.clear()

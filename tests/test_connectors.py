@@ -154,21 +154,23 @@ class TestMicrosoftRefreshTokenGuard:
 class TestRoboflowAuthHeader:
     """Verify Roboflow connector uses Authorization header via ClientSpec."""
 
-    def test_client_has_auth_header(self):
+    @pytest.mark.asyncio
+    async def test_client_has_auth_header(self):
         from asibot.token_store import CLIENT_SPECS, build_client
 
         spec = CLIENT_SPECS["roboflow"]
-        client = build_client(spec, {"api_key": "rf_test123"})
+        client = await build_client(spec, {"api_key": "rf_test123"})
         assert client is not None
-        assert "Authorization" in client.headers
-        assert client.headers["Authorization"] == "Bearer rf_test123"
+        assert "Authorization" in client._auth_headers
+        assert client._auth_headers["Authorization"] == "Bearer rf_test123"
 
-    def test_client_none_without_key(self):
+    @pytest.mark.asyncio
+    async def test_client_none_without_key(self):
         from asibot.token_store import CLIENT_SPECS, build_client
 
         spec = CLIENT_SPECS["roboflow"]
-        assert build_client(spec, {}) is None
-        assert build_client(spec, {"api_key": ""}) is None
+        assert await build_client(spec, {}) is None
+        assert await build_client(spec, {"api_key": ""}) is None
 
 
 class TestGitHubPerPageCap:

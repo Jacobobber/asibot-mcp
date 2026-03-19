@@ -634,13 +634,11 @@ class TestGetS2SToken:
     @pytest.mark.asyncio
     async def test_cached_token_returned(self):
         """Cached token is returned without making HTTP request."""
-        from asibot.distributed_cache import InMemoryCache
-        import asibot.distributed_cache as dc
+        from asibot.token_store import _s2s_token_cache, _S2S_TOKEN_MARGIN
 
-        original = dc._cache
-        dc._cache = InMemoryCache()
+        cache_key = "test:cid"
+        _s2s_token_cache[cache_key] = ("cached_token", time.time() + 3600 + _S2S_TOKEN_MARGIN)
         try:
-            await dc._cache.put_s2s_token("test:cid", "cached_token", time.time() + 3600)
             from asibot import token_store
             token = await token_store.get_s2s_token(
                 cache_key="test:cid",
@@ -651,20 +649,17 @@ class TestGetS2SToken:
             )
             assert token == "cached_token"
         finally:
-            dc._cache = original
+            _s2s_token_cache.pop(cache_key, None)
 
     @pytest.mark.asyncio
     async def test_expired_token_refetched(self):
         """Expired token triggers a new fetch."""
         from unittest.mock import patch
-        from asibot.distributed_cache import InMemoryCache
-        import asibot.distributed_cache as dc
+        from asibot.token_store import _s2s_token_cache
 
-        original = dc._cache
-        dc._cache = InMemoryCache()
+        cache_key = "test:cid"
+        _s2s_token_cache[cache_key] = ("old_token", time.time() - 100)
         try:
-            await dc._cache.put_s2s_token("test:cid", "old_token", time.time() - 100)
-
             mock_resp = MagicMock()
             mock_resp.json.return_value = {"access_token": "new_token", "expires_in": 3600}
             mock_resp.raise_for_status.return_value = None
@@ -684,8 +679,8 @@ class TestGetS2SToken:
                     service_name="Test",
                 )
             assert token == "new_token"
-            cached = await dc._cache.get_s2s_token("test:cid")
-            assert cached is not None
-            assert cached[0] == "new_token"
+            # Verify it's cached in _s2s_token_cache
+            assert cache_key in _s2s_token_cache
+            assert _s2s_token_cache[cache_key][0] == "new_token"
         finally:
-            dc._cache = original
+            _s2s_token_cache.pop(cache_key, None)

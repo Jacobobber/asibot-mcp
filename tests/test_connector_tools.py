@@ -720,32 +720,28 @@ class TestZoomTokenCaching:
     @pytest.mark.asyncio
     async def test_token_cached(self):
         from asibot.connectors.zoom import _get_access_token
-        from asibot.distributed_cache import InMemoryCache
-        import asibot.distributed_cache as dc
+        from asibot.token_store import _s2s_token_cache, _S2S_TOKEN_MARGIN
 
-        original = dc._cache
-        dc._cache = InMemoryCache()
+        # Pre-populate the token_store in-memory cache with valid token
+        cache_key = "zoom:acc1"
+        _s2s_token_cache[cache_key] = ("cached_token", time.time() + 3600 + _S2S_TOKEN_MARGIN)
         try:
-            # Pre-populate cache with valid token
-            await dc._cache.put_s2s_token("zoom:acc1", "cached_token", time.time() + 3600)
             creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
             # Should return cached token without making HTTP request
             token = await _get_access_token(creds)
             assert token == "cached_token"
         finally:
-            dc._cache = original
+            _s2s_token_cache.pop(cache_key, None)
 
     @pytest.mark.asyncio
     async def test_expired_token_refetched(self):
         from asibot.connectors.zoom import _get_access_token
-        from asibot.distributed_cache import InMemoryCache
-        import asibot.distributed_cache as dc
+        from asibot.token_store import _s2s_token_cache
 
-        original = dc._cache
-        dc._cache = InMemoryCache()
+        # Pre-populate with expired token
+        cache_key = "zoom:acc1"
+        _s2s_token_cache[cache_key] = ("old_token", time.time() - 100)
         try:
-            # Pre-populate with expired token
-            await dc._cache.put_s2s_token("zoom:acc1", "old_token", time.time() - 100)
             creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
 
             mock_resp = MagicMock()
@@ -760,31 +756,28 @@ class TestZoomTokenCaching:
             with patch("httpx.AsyncClient", return_value=mock_client):
                 token = await _get_access_token(creds)
             assert token == "new_token"
-            # Verify it's cached now
-            cached = await dc._cache.get_s2s_token("zoom:acc1")
-            assert cached is not None
-            assert cached[0] == "new_token"
+            # Verify it's cached now in _s2s_token_cache
+            assert cache_key in _s2s_token_cache
+            assert _s2s_token_cache[cache_key][0] == "new_token"
         finally:
-            dc._cache = original
+            _s2s_token_cache.pop(cache_key, None)
 
 
 class TestPaylocityTokenCaching:
     @pytest.mark.asyncio
     async def test_token_cached(self):
         from asibot.connectors.paylocity import _get_access_token
+        from asibot.token_store import _s2s_token_cache, _S2S_TOKEN_MARGIN
 
-        from asibot.distributed_cache import InMemoryCache
-        import asibot.distributed_cache as dc
-
-        original = dc._cache
-        dc._cache = InMemoryCache()
+        # Pre-populate the token_store in-memory cache with valid token
+        cache_key = "paylocity:cid"
+        _s2s_token_cache[cache_key] = ("cached_pay_token", time.time() + 3600 + _S2S_TOKEN_MARGIN)
         try:
-            await dc._cache.put_s2s_token("paylocity:cid", "cached_pay_token", time.time() + 3600)
             creds = {"client_id": "cid", "client_secret": "csec"}
             token = await _get_access_token(creds)
             assert token == "cached_pay_token"
         finally:
-            dc._cache = original
+            _s2s_token_cache.pop(cache_key, None)
 
 
 # --- safe_request Tests ---

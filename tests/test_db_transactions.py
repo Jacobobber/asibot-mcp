@@ -235,43 +235,68 @@ class TestSetCredentialsWithPrefs:
 
 
 class TestAuthSetRoleDelegation:
-    def test_set_role_updates_user(self):
+    @pytest.mark.asyncio
+    async def test_set_role_updates_user(self):
         """auth.set_role should update the role and return the updated user."""
         from asibot import auth
 
         mock_user = {"user_id": "u@co.com", "role": "user"}
+        updated_user = {"user_id": "u@co.com", "role": "admin"}
 
-        with patch.object(auth, "get_user_by_email", return_value=mock_user), \
-             patch.object(auth, "_save"):
-            result = auth.set_role("u@co.com", "admin")
+        mock_db = MagicMock()
+        mock_db.get_user_by_email = AsyncMock(return_value=mock_user)
+        mock_db.set_role = AsyncMock(return_value=updated_user)
+        mock_audit = MagicMock()
+        mock_audit.log_event = MagicMock()
+
+        with patch("asibot.db", mock_db), patch("asibot.audit", mock_audit):
+            result = await auth.set_role("u@co.com", "admin")
             assert result is not None
             assert result["role"] == "admin"
 
-    def test_set_role_readonly(self):
+    @pytest.mark.asyncio
+    async def test_set_role_readonly(self):
         """auth.set_role should accept 'readonly' as a valid role."""
         from asibot import auth
 
         mock_user = {"user_id": "u@co.com", "role": "user"}
+        updated_user = {"user_id": "u@co.com", "role": "readonly"}
 
-        with patch.object(auth, "get_user_by_email", return_value=mock_user), \
-             patch.object(auth, "_save"):
-            result = auth.set_role("u@co.com", "readonly")
+        mock_db = MagicMock()
+        mock_db.get_user_by_email = AsyncMock(return_value=mock_user)
+        mock_db.set_role = AsyncMock(return_value=updated_user)
+        mock_audit = MagicMock()
+        mock_audit.log_event = MagicMock()
+
+        with patch("asibot.db", mock_db), patch("asibot.audit", mock_audit):
+            result = await auth.set_role("u@co.com", "readonly")
             assert result is not None
             assert result["role"] == "readonly"
 
-    def test_set_role_invalid_role_returns_none(self):
-        """auth.set_role should return None for invalid roles."""
+    @pytest.mark.asyncio
+    async def test_set_role_invalid_role_returns_none(self):
+        """auth.set_role should raise ValueError for invalid roles."""
         from asibot import auth
 
-        result = auth.set_role("u@co.com", "superadmin")
-        assert result is None
+        mock_audit = MagicMock()
+        mock_audit.log_event = MagicMock()
 
-    def test_set_role_user_not_found(self):
+        with patch("asibot.audit", mock_audit):
+            with pytest.raises(ValueError, match="Invalid role"):
+                await auth.set_role("u@co.com", "superadmin")
+
+    @pytest.mark.asyncio
+    async def test_set_role_user_not_found(self):
         """auth.set_role should return None if the user does not exist."""
         from asibot import auth
 
-        with patch.object(auth, "get_user_by_email", return_value=None):
-            result = auth.set_role("nobody@co.com", "admin")
+        mock_db = MagicMock()
+        mock_db.get_user_by_email = AsyncMock(return_value=None)
+        mock_audit = MagicMock()
+        mock_audit.log_event = MagicMock()
+
+        with patch("asibot.db", mock_db), patch("asibot.audit", mock_audit):
+            result = await auth.set_role("nobody@co.com", "admin")
             assert result is None
 
 

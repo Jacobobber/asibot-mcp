@@ -233,7 +233,8 @@ class TestUserSessionUsesStore:
         mock_store = MagicMock(spec=SessionStore)
         user_session.set_store(mock_store)
         user_session._cache_session("sess1", "alice@example.com")
-        mock_store.put_session.assert_called_once_with("sess1", "alice@example.com", user_session._SESSION_TTL)
+        from asibot.config import settings
+        mock_store.put_session.assert_called_once_with("sess1", "alice@example.com", settings.session_ttl)
 
     def test_invalidate_delegates(self):
         from asibot import user_session

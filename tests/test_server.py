@@ -15,7 +15,7 @@ class TestCredentialValidation:
     @pytest.mark.asyncio
     async def test_rejects_non_dict_json(self):
         ctx = MagicMock()
-        with patch.object(server.user_session, "require_user", return_value=("test@example.com", None)):
+        with patch.object(server.user_session, "require_user", new_callable=AsyncMock, return_value=("test@example.com", None)):
             # JSON array instead of object
             result = await server.asibot_set_credentials("github", '["token"]', ctx)
             assert "JSON object" in result
@@ -23,35 +23,35 @@ class TestCredentialValidation:
     @pytest.mark.asyncio
     async def test_rejects_json_string(self):
         ctx = MagicMock()
-        with patch.object(server.user_session, "require_user", return_value=("test@example.com", None)):
+        with patch.object(server.user_session, "require_user", new_callable=AsyncMock, return_value=("test@example.com", None)):
             result = await server.asibot_set_credentials("github", '"just a string"', ctx)
             assert "JSON object" in result
 
     @pytest.mark.asyncio
     async def test_rejects_json_number(self):
         ctx = MagicMock()
-        with patch.object(server.user_session, "require_user", return_value=("test@example.com", None)):
+        with patch.object(server.user_session, "require_user", new_callable=AsyncMock, return_value=("test@example.com", None)):
             result = await server.asibot_set_credentials("github", '42', ctx)
             assert "JSON object" in result
 
     @pytest.mark.asyncio
     async def test_rejects_invalid_json(self):
         ctx = MagicMock()
-        with patch.object(server.user_session, "require_user", return_value=("test@example.com", None)):
+        with patch.object(server.user_session, "require_user", new_callable=AsyncMock, return_value=("test@example.com", None)):
             result = await server.asibot_set_credentials("github", 'not json at all', ctx)
             assert "Invalid JSON" in result
 
     @pytest.mark.asyncio
     async def test_rejects_missing_fields(self):
         ctx = MagicMock()
-        with patch.object(server.user_session, "require_user", return_value=("test@example.com", None)):
+        with patch.object(server.user_session, "require_user", new_callable=AsyncMock, return_value=("test@example.com", None)):
             result = await server.asibot_set_credentials("github", '{"token": "ghp_xxx"}', ctx)
             assert "Missing required fields" in result
 
     @pytest.mark.asyncio
     async def test_rejects_unknown_service(self):
         ctx = MagicMock()
-        with patch.object(server.user_session, "require_user", return_value=("test@example.com", None)):
+        with patch.object(server.user_session, "require_user", new_callable=AsyncMock, return_value=("test@example.com", None)):
             result = await server.asibot_set_credentials("nonexistent", '{}', ctx)
             assert "Unknown service" in result
 
@@ -59,7 +59,7 @@ class TestCredentialValidation:
     async def test_accepts_valid_credentials(self):
         ctx = MagicMock()
         with (
-            patch.object(server.user_session, "require_user", return_value=("test@example.com", None)),
+            patch.object(server.user_session, "require_user", new_callable=AsyncMock, return_value=("test@example.com", None)),
             patch.object(server.token_store, "set_credentials"),
         ):
             result = await server.asibot_set_credentials(
@@ -77,7 +77,7 @@ class TestSetupCSRF:
         import secrets
 
         with (
-            patch.object(server.user_session, "require_user", return_value=(None, "no user")),
+            patch.object(server.user_session, "require_user", new_callable=AsyncMock, return_value=(None, "no user")),
             patch.object(server.settings, "ms365_tenant_id", "test-tenant"),
             patch.object(server.settings, "ms365_client_id", "test-client"),
             patch("asibot.server.httpx.AsyncClient") as mock_http_cls,

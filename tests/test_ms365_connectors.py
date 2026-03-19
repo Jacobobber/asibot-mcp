@@ -75,11 +75,11 @@ def _register_tools(connector_class):
 class TestSharePointGetFileInfo:
     @pytest.mark.asyncio
     async def test_get_file_info_success(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.sharepoint import SharePointConnector
+        with patch("asibot.connectors.sharepoint.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
             mock_settings.sharepoint_site_url = "company.sharepoint.com"
-            from asibot.connectors.sharepoint import SharePointConnector
             tools = _register_tools(SharePointConnector)
 
         resp = _mock_response(200, {
@@ -104,11 +104,11 @@ class TestSharePointGetFileInfo:
 
     @pytest.mark.asyncio
     async def test_get_file_info_auth_error(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.sharepoint import SharePointConnector
+        with patch("asibot.connectors.sharepoint.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
             mock_settings.sharepoint_site_url = ""
-            from asibot.connectors.sharepoint import SharePointConnector
             tools = _register_tools(SharePointConnector)
 
         ctx = MagicMock()
@@ -123,11 +123,11 @@ class TestSharePointGetFileInfo:
 class TestSharePointListVersions:
     @pytest.mark.asyncio
     async def test_list_versions_success(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.sharepoint import SharePointConnector
+        with patch("asibot.connectors.sharepoint.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
             mock_settings.sharepoint_site_url = "company.sharepoint.com"
-            from asibot.connectors.sharepoint import SharePointConnector
             tools = _register_tools(SharePointConnector)
 
         resp = _mock_response(200, {
@@ -155,11 +155,11 @@ class TestSharePointListVersions:
 
     @pytest.mark.asyncio
     async def test_list_versions_empty(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.sharepoint import SharePointConnector
+        with patch("asibot.connectors.sharepoint.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
             mock_settings.sharepoint_site_url = ""
-            from asibot.connectors.sharepoint import SharePointConnector
             tools = _register_tools(SharePointConnector)
 
         resp = _mock_response(200, {"value": []})
@@ -176,10 +176,10 @@ class TestSharePointListVersions:
 class TestOutlookListFolders:
     @pytest.mark.asyncio
     async def test_list_folders_success(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.outlook import OutlookConnector
+        with patch("asibot.connectors.outlook.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.outlook import OutlookConnector
             tools = _register_tools(OutlookConnector)
 
         resp = _mock_response(200, {
@@ -204,10 +204,10 @@ class TestOutlookListFolders:
 class TestOutlookGetAttachments:
     @pytest.mark.asyncio
     async def test_get_attachments_success(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.outlook import OutlookConnector
+        with patch("asibot.connectors.outlook.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.outlook import OutlookConnector
             tools = _register_tools(OutlookConnector)
 
         resp = _mock_response(200, {
@@ -226,10 +226,10 @@ class TestOutlookGetAttachments:
 
     @pytest.mark.asyncio
     async def test_get_attachments_invalid_id(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.outlook import OutlookConnector
+        with patch("asibot.connectors.outlook.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.outlook import OutlookConnector
             tools = _register_tools(OutlookConnector)
 
         ctx = MagicMock()
@@ -243,10 +243,10 @@ class TestOutlookGetAttachments:
 class TestCalendarCreateEvent:
     @pytest.mark.asyncio
     async def test_create_event_success(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.outlook import OutlookConnector
+        with patch("asibot.connectors.outlook.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.outlook import OutlookConnector
             tools = _register_tools(OutlookConnector)
 
         resp = _mock_response(200, {"id": "event-123", "subject": "Sprint Planning"})
@@ -265,10 +265,10 @@ class TestCalendarCreateEvent:
 
     @pytest.mark.asyncio
     async def test_create_event_invalid_attendee(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.outlook import OutlookConnector
+        with patch("asibot.connectors.outlook.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.outlook import OutlookConnector
             tools = _register_tools(OutlookConnector)
 
         client = _mock_client(_mock_response(200))
@@ -285,10 +285,10 @@ class TestCalendarCreateEvent:
 
     @pytest.mark.asyncio
     async def test_create_event_empty_subject(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.outlook import OutlookConnector
+        with patch("asibot.connectors.outlook.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.outlook import OutlookConnector
             tools = _register_tools(OutlookConnector)
 
         ctx = MagicMock()
@@ -304,10 +304,10 @@ class TestCalendarCreateEvent:
 class TestTeamsListMembers:
     @pytest.mark.asyncio
     async def test_list_members_success(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.teams import TeamsConnector
+        with patch("asibot.connectors.teams.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.teams import TeamsConnector
             tools = _register_tools(TeamsConnector)
 
         resp = _mock_response(200, {
@@ -327,10 +327,10 @@ class TestTeamsListMembers:
 
     @pytest.mark.asyncio
     async def test_list_members_invalid_id(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.teams import TeamsConnector
+        with patch("asibot.connectors.teams.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.teams import TeamsConnector
             tools = _register_tools(TeamsConnector)
 
         ctx = MagicMock()
@@ -344,10 +344,10 @@ class TestTeamsListMembers:
 class TestTeamsSendMessage:
     @pytest.mark.asyncio
     async def test_send_message_success(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.teams import TeamsConnector
+        with patch("asibot.connectors.teams.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.teams import TeamsConnector
             tools = _register_tools(TeamsConnector)
 
         resp = _mock_response(200, {"id": "msg-123"})
@@ -359,10 +359,10 @@ class TestTeamsSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_empty_message(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.teams import TeamsConnector
+        with patch("asibot.connectors.teams.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.teams import TeamsConnector
             tools = _register_tools(TeamsConnector)
 
         ctx = MagicMock()
@@ -371,10 +371,10 @@ class TestTeamsSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_write_blocked(self):
-        with patch("asibot.config.settings") as mock_settings:
+        from asibot.connectors.teams import TeamsConnector
+        with patch("asibot.connectors.teams.settings") as mock_settings:
             mock_settings.ms365_tenant_id = "tid"
             mock_settings.ms365_client_id = "cid"
-            from asibot.connectors.teams import TeamsConnector
             tools = _register_tools(TeamsConnector)
 
         ctx = MagicMock()
