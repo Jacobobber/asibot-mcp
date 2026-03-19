@@ -188,6 +188,79 @@ class SharePointConnector(Connector):
             return f"--- {item['name']} ---\n\n{text}"
 
         @mcp.tool()
+        async def sharepoint_get_file_info(file_path: str, ctx: Context, site: str = "") -> str:
+            """Get metadata about a SharePoint file (size, author, modified date, sharing).
+
+            Args:
+                file_path: Path to file
+                site: Site ID. Leave empty for default.
+            """
+            client, uid, err = await microsoft.require_graph_client(ctx, "sharepoint", "read")
+            if err:
+                return err
+            sid = site or await conn._resolve_site(uid, client)
+            if not sid:
+                return "No site configured."
+            safe_path = quote(file_path, safe="/")
+            r, err = await token_store.safe_request(
+                client, "GET",
+                f"{GRAPH}/sites/{sid}/drive/root:/{safe_path}",
+                service="SharePoint", action="get file info",
+                params={"$select": "id,name,size,createdBy,lastModifiedBy,lastModifiedDateTime,webUrl,shared,file"},
+            )
+            if err:
+                return err
+            item = r.json()
+            created_by = item.get("createdBy", {}).get("user", {}).get("displayName", "?")
+            modified_by = item.get("lastModifiedBy", {}).get("user", {}).get("displayName", "?")
+            lines = [
+                f"Name: {item.get('name', '?')}",
+                f"ID: {item.get('id', '?')}",
+                f"Size: {item.get('size', 0):,} bytes",
+                f"Created by: {created_by}",
+                f"Modified by: {modified_by}",
+                f"Modified: {item.get('lastModifiedDateTime', '?')}",
+                f"URL: {item.get('webUrl', '?')}",
+            ]
+            mime = item.get("file", {}).get("mimeType", "")
+            if mime:
+                lines.append(f"Type: {mime}")
+            if item.get("shared"):
+                lines.append(f"Shared: {item['shared'].get('scope', 'unknown')}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def sharepoint_list_versions(file_path: str, ctx: Context, site: str = "") -> str:
+            """List version history of a SharePoint file.
+
+            Args:
+                file_path: Path to file
+                site: Site ID. Leave empty for default.
+            """
+            client, uid, err = await microsoft.require_graph_client(ctx, "sharepoint", "read")
+            if err:
+                return err
+            sid = site or await conn._resolve_site(uid, client)
+            if not sid:
+                return "No site configured."
+            safe_path = quote(file_path, safe="/")
+            r, err = await token_store.safe_request(
+                client, "GET",
+                f"{GRAPH}/sites/{sid}/drive/root:/{safe_path}:/versions",
+                service="SharePoint", action="list versions",
+            )
+            if err:
+                return err
+            versions = r.json().get("value", [])
+            if not versions:
+                return "No versions found."
+            lines = []
+            for v in versions:
+                modified_by = v.get("lastModifiedBy", {}).get("user", {}).get("displayName", "?")
+                lines.append(f"Version {v.get('id', '?')}\n  Modified: {v.get('lastModifiedDateTime', '?')}\n  By: {modified_by}")
+            return "\n\n".join(lines)
+
+        @mcp.tool()
         async def sharepoint_list_sites(ctx: Context, query: str = "") -> str:
             """List or search SharePoint sites.
 

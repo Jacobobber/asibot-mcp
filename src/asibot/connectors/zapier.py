@@ -29,7 +29,7 @@ class ZapierConnector(Connector):
         @mcp.tool()
         async def zapier_list_actions(ctx: Context) -> str:
             """List all available Zapier NLA actions configured for your account."""
-            client, uid, err = token_store.require_service(ctx, "zapier", level="read")
+            client, uid, err = await token_store.require_service(ctx, "zapier", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "GET", f"{API}/exposed/", service="Zapier", action="list actions")
@@ -57,7 +57,7 @@ class ZapierConnector(Connector):
             err = validation.validate_content(instructions, "instructions")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "zapier", level="write")
+            client, uid, err = await token_store.require_service(ctx, "zapier", level="write")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "POST", f"{API}/exposed/{action_id}/execute/", service="Zapier", action="run action", json={"instructions": instructions})
@@ -69,3 +69,53 @@ class ZapierConnector(Connector):
             if status == "success":
                 return f"Action executed successfully.\n\nResult: {result}"
             return f"Action status: {status}\n\nDetails: {data}"
+
+        @mcp.tool()
+        async def zapier_preview_action(action_id: str, instructions: str, ctx: Context) -> str:
+            """Preview a Zapier NLA action (dry run) without executing it.
+
+            Args:
+                action_id: The action ID from zapier_list_actions
+                instructions: Natural language instructions for the action
+            """
+            err = validation.validate_id(action_id, "action_id")
+            if err:
+                return err
+            err = validation.validate_content(instructions, "instructions")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "zapier", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "POST", f"{API}/exposed/{action_id}/preview/", service="Zapier", action="preview action", json={"instructions": instructions})
+            if err:
+                return err
+            data = r.json()
+            status = data.get("status", "unknown")
+            preview = data.get("result", data.get("preview", {}))
+            return f"Preview status: {status}\n\nPreview result: {preview}"
+
+        @mcp.tool()
+        async def zapier_get_action(action_id: str, ctx: Context) -> str:
+            """Get details of a specific Zapier NLA action.
+
+            Args:
+                action_id: The action ID
+            """
+            err = validation.validate_id(action_id, "action_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "zapier", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/exposed/{action_id}/", service="Zapier", action="get action")
+            if err:
+                return err
+            a = r.json()
+            description = a.get("description", "No description")
+            aid = a.get("id", action_id)
+            app = a.get("params", {}).get("app", "?")
+            params = a.get("params", {})
+            param_keys = [k for k in params if k != "app"]
+            param_str = ", ".join(param_keys) if param_keys else "none"
+            return f"{description}\nID: {aid}\nApp: {app}\nParameters: {param_str}"

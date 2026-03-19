@@ -39,7 +39,7 @@ class GitHubConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "github", level="read")
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
@@ -72,7 +72,7 @@ class GitHubConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "github", level="read")
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
@@ -101,7 +101,7 @@ class GitHubConnector(Connector):
                 limit: Max results (default: 30)
             """
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "github", level="read")
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
@@ -136,7 +136,7 @@ class GitHubConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "github", level="read")
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
@@ -173,7 +173,7 @@ class GitHubConnector(Connector):
             err = validation.validate_repo(repo)
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "github", level="read")
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
@@ -212,7 +212,7 @@ class GitHubConnector(Connector):
             err = validation.validate_content(title, "title")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "github", level="write")
+            client, uid, err = await token_store.require_service(ctx, "github", level="write")
             if err:
                 return err
             org = token_store.get_credentials(uid, "github").get("org", "")
@@ -226,3 +226,173 @@ class GitHubConnector(Connector):
                 return err
             i = r.json()
             return f"Created issue #{i['number']}: {i.get('title', '?')}\nURL: {i.get('html_url', '?')}"
+
+        @mcp.tool()
+        async def github_get_pull_request(repo: str, pr_number: int, ctx: Context) -> str:
+            """Get full details of a GitHub pull request.
+
+            Args:
+                repo: Repo name (e.g., "my-repo" or "org/my-repo")
+                pr_number: Pull request number
+            """
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
+            if err:
+                return err
+            org = token_store.get_credentials(uid, "github").get("org", "")
+            full = repo if "/" in repo else f"{org}/{repo}"
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{full}/pulls/{pr_number}",
+                service="GitHub", action="get pull request",
+            )
+            if err:
+                return err
+            pr = r.json()
+            return (
+                f"#{pr['number']}: {pr.get('title', '?')}\n"
+                f"State: {pr.get('state', '?')} | Author: {pr.get('user', {}).get('login', '?')}\n"
+                f"Head: {pr.get('head', {}).get('ref', '?')} -> Base: {pr.get('base', {}).get('ref', '?')}\n"
+                f"Additions: {pr.get('additions', 0)} | Deletions: {pr.get('deletions', 0)} | Changed files: {pr.get('changed_files', 0)}\n"
+                f"Mergeable: {pr.get('mergeable', '?')}\n\n"
+                f"{pr.get('body', 'No description')}"
+            )
+
+        @mcp.tool()
+        async def github_list_commits(repo: str, ctx: Context, limit: int = 20) -> str:
+            """List recent commits for a repository.
+
+            Args:
+                repo: Repo name (e.g., "my-repo" or "org/my-repo")
+                limit: Max results (default: 20)
+            """
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
+            if err:
+                return err
+            org = token_store.get_credentials(uid, "github").get("org", "")
+            full = repo if "/" in repo else f"{org}/{repo}"
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{full}/commits",
+                service="GitHub", action="list commits",
+                params={"per_page": min(limit, 100)},
+            )
+            if err:
+                return err
+            commits = r.json()
+            if not commits:
+                return "No commits found."
+            lines = []
+            for c in commits:
+                sha = c.get("sha", "?")[:7]
+                msg = c.get("commit", {}).get("message", "?").split("\n")[0]
+                author = c.get("commit", {}).get("author", {}).get("name", "?")
+                date = c.get("commit", {}).get("author", {}).get("date", "?")
+                lines.append(f"{sha} {msg}\n  Author: {author} | Date: {date}")
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def github_list_releases(repo: str, ctx: Context, limit: int = 10) -> str:
+            """List releases for a repository.
+
+            Args:
+                repo: Repo name (e.g., "my-repo" or "org/my-repo")
+                limit: Max results (default: 10)
+            """
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
+            if err:
+                return err
+            org = token_store.get_credentials(uid, "github").get("org", "")
+            full = repo if "/" in repo else f"{org}/{repo}"
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{full}/releases",
+                service="GitHub", action="list releases",
+                params={"per_page": min(limit, 100)},
+            )
+            if err:
+                return err
+            releases = r.json()
+            if not releases:
+                return "No releases found."
+            lines = []
+            for rel in releases:
+                body = rel.get("body", "") or ""
+                truncated = (body[:200] + "...") if len(body) > 200 else body
+                lines.append(
+                    f"{rel.get('tag_name', '?')}: {rel.get('name', 'Untitled')}\n"
+                    f"  Published: {rel.get('published_at', '?')}\n"
+                    f"  {truncated}"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def github_list_branches(repo: str, ctx: Context) -> str:
+            """List branches for a repository.
+
+            Args:
+                repo: Repo name (e.g., "my-repo" or "org/my-repo")
+            """
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
+            if err:
+                return err
+            org = token_store.get_credentials(uid, "github").get("org", "")
+            full = repo if "/" in repo else f"{org}/{repo}"
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{full}/branches",
+                service="GitHub", action="list branches",
+            )
+            if err:
+                return err
+            branches = r.json()
+            if not branches:
+                return "No branches found."
+            return "\n".join(
+                f"{b.get('name', '?')} | Protected: {b.get('protected', False)}"
+                for b in branches
+            )
+
+        @mcp.tool()
+        async def github_get_workflow_runs(repo: str, ctx: Context, limit: int = 10) -> str:
+            """List recent GitHub Actions workflow runs.
+
+            Args:
+                repo: Repo name (e.g., "my-repo" or "org/my-repo")
+                limit: Max results (default: 10)
+            """
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
+            if err:
+                return err
+            org = token_store.get_credentials(uid, "github").get("org", "")
+            full = repo if "/" in repo else f"{org}/{repo}"
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{full}/actions/runs",
+                service="GitHub", action="get workflow runs",
+                params={"per_page": min(limit, 100)},
+            )
+            if err:
+                return err
+            runs = r.json().get("workflow_runs", [])
+            if not runs:
+                return "No workflow runs found."
+            lines = []
+            for run in runs:
+                lines.append(
+                    f"{run.get('name', '?')} | Status: {run.get('status', '?')} | Conclusion: {run.get('conclusion', '?')}\n"
+                    f"  Branch: {run.get('head_branch', '?')} | Created: {run.get('created_at', '?')}"
+                )
+            return "\n\n".join(lines)

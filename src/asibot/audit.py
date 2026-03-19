@@ -67,22 +67,9 @@ def _redact_args(args: dict) -> dict:
     return safe_args
 
 
-def log_tool_call(user_id: str, tool_name: str, args: dict | None = None) -> None:
-    """Record a tool invocation.
-
-    Tries the primary rotating audit log first.  On failure, retries once after
-    a short delay.  If the primary log still fails, falls back to a JSONL file.
-    If both fail, logs a CRITICAL error so the event is never silently lost.
-    """
+def _write_entry(entry: dict) -> None:
+    """Write an audit entry with retry and JSONL fallback."""
     global audit_write_failures_total
-
-    entry = {
-        "ts": time.time(),
-        "user": user_id or "anonymous",
-        "tool": tool_name,
-    }
-    if args:
-        entry["args"] = _redact_args(args)
 
     line = json.dumps(entry)
 
@@ -119,3 +106,50 @@ def log_tool_call(user_id: str, tool_name: str, args: dict | None = None) -> Non
             fallback_exc,
             line,
         )
+
+
+def log_tool_call(user_id: str, tool_name: str, args: dict | None = None) -> None:
+    """Record a tool invocation.
+
+    Tries the primary rotating audit log first.  On failure, retries once after
+    a short delay.  If the primary log still fails, falls back to a JSONL file.
+    If both fail, logs a CRITICAL error so the event is never silently lost.
+    """
+    entry = {
+        "ts": time.time(),
+        "user": user_id or "anonymous",
+        "tool": tool_name,
+    }
+    if args:
+        entry["args"] = _redact_args(args)
+    _write_entry(entry)
+
+
+def log_event(
+    user_id: str | None,
+    event: str,
+    *,
+    tool: str | None = None,
+    args: dict | None = None,
+    service: str | None = None,
+    success: bool | None = None,
+) -> None:
+    """Record a lifecycle/admin event in the audit log.
+
+    Use this for events that are not direct tool invocations, e.g. role changes,
+    session invalidation, etc.
+    """
+    entry: dict = {
+        "ts": time.time(),
+        "user": user_id or "anonymous",
+        "event": event,
+    }
+    if tool is not None:
+        entry["tool"] = tool
+    if args is not None:
+        entry["args"] = _redact_args(args)
+    if service is not None:
+        entry["service"] = service
+    if success is not None:
+        entry["success"] = success
+    _write_entry(entry)

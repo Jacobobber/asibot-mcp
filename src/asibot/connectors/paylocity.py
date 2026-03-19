@@ -47,7 +47,7 @@ class PaylocityConnector(Connector):
             Args:
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "paylocity", level="read")
+            client, uid, err = await token_store.require_service(ctx, "paylocity", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "paylocity")
@@ -90,7 +90,7 @@ class PaylocityConnector(Connector):
             err = validation.validate_id(employee_id, "employee_id")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "paylocity", level="read")
+            client, uid, err = await token_store.require_service(ctx, "paylocity", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "paylocity")
@@ -114,3 +114,114 @@ class PaylocityConnector(Connector):
             title = emp.get("departmentPosition", {}).get("jobTitle", "?")
             hire = emp.get("hireDate", "?")
             return f"{first} {last}\nID: {employee_id}\nStatus: {status}\nDepartment: {dept}\nTitle: {title}\nHire Date: {hire}"
+
+        @mcp.tool()
+        async def paylocity_search_employees(query: str, ctx: Context, limit: int = 25) -> str:
+            """Search employees in Paylocity.
+
+            Args:
+                query: Search filter (name, department, etc.)
+                limit: Max results (default: 25)
+            """
+            err = validation.validate_query(query, "query")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "paylocity", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "paylocity")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Paylocity", "authenticate", e)
+            company_id = creds["company_id"]
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/companies/{company_id}/employees",
+                service="Paylocity", action="search employees",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"search": query, "pagesize": limit},
+            )
+            if err:
+                return err
+            employees = r.json()
+            if not employees:
+                return "No employees found matching the query."
+            lines = []
+            for emp in employees[:limit]:
+                eid = emp.get("employeeId", "?")
+                first = emp.get("firstName", "")
+                last = emp.get("lastName", "")
+                status = emp.get("statusType", "?")
+                lines.append(f"{first} {last} (ID: {eid}) | Status: {status}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def paylocity_get_pay_statement(employee_id: str, ctx: Context, year: str, check_date: str) -> str:
+            """Get pay statement for an employee from Paylocity.
+
+            Args:
+                employee_id: The employee ID
+                year: The year of the pay statement (e.g., '2024')
+                check_date: The check date (e.g., '2024-01-15')
+            """
+            err = validation.validate_id(employee_id, "employee_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "paylocity", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "paylocity")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Paylocity", "authenticate", e)
+            company_id = creds["company_id"]
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/companies/{company_id}/employees/{employee_id}/paystatement",
+                service="Paylocity", action="get pay statement",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"year": year, "checkDate": check_date},
+            )
+            if err:
+                return err
+            data = r.json()
+            statements = data if isinstance(data, list) else data.get("payStatement", [data])
+            if not statements:
+                return "No pay statements found."
+            lines = []
+            for stmt in statements:
+                check = stmt.get("checkDate", "?")
+                gross = stmt.get("grossPay", "?")
+                net = stmt.get("netPay", "?")
+                lines.append(f"Check Date: {check} | Gross: {gross} | Net: {net}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def paylocity_list_departments(ctx: Context) -> str:
+            """List departments (cost centers) from Paylocity."""
+            client, uid, err = await token_store.require_service(ctx, "paylocity", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "paylocity")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Paylocity", "authenticate", e)
+            company_id = creds["company_id"]
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/companies/{company_id}/codelists/costcenter1",
+                service="Paylocity", action="list departments",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if err:
+                return err
+            departments = r.json()
+            if not departments:
+                return "No departments found."
+            lines = []
+            for dept in departments:
+                code = dept.get("code", "?")
+                desc = dept.get("description", "?")
+                lines.append(f"{code}: {desc}")
+            return "\n".join(lines)

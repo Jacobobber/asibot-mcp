@@ -35,7 +35,7 @@ class RingCentralConnector(Connector):
                 limit: Max results (default: 25)
             """
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "ringcentral", level="read")
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
             if err:
                 return err
             pages = paginate_odata(
@@ -65,7 +65,7 @@ class RingCentralConnector(Connector):
                 limit: Max results (default: 25)
             """
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "ringcentral", level="read")
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
             if err:
                 return err
             pages = paginate_odata(
@@ -85,4 +85,94 @@ class RingCentralConnector(Connector):
                 created = m.get("creationTime", "?")[:16] if m.get("creationTime") else "?"
                 subject = m.get("subject", "No subject")
                 lines.append(f"{created} | {direction} | {msg_type} | {subject}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def ringcentral_get_call_recording(recording_id: str, ctx: Context) -> str:
+            """Get metadata for a call recording from RingCentral.
+
+            Args:
+                recording_id: The recording ID
+            """
+            err = validation.validate_id(recording_id, "recording_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/account/~/recording/{recording_id}", service="RingCentral", action="get recording")
+            if err:
+                return err
+            rec = r.json()
+            rid = rec.get("id", "?")
+            content_uri = rec.get("contentUri", "?")
+            duration = rec.get("duration", "?")
+            rec_type = rec.get("type", "?")
+            return f"Recording ID: {rid}\nType: {rec_type}\nDuration: {duration}s\nContent URI: {content_uri}"
+
+        @mcp.tool()
+        async def ringcentral_presence(ctx: Context) -> str:
+            """Get current presence/availability status from RingCentral."""
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/account/~/extension/~/presence", service="RingCentral", action="get presence")
+            if err:
+                return err
+            p = r.json()
+            status = p.get("presenceStatus", "?")
+            dnd = p.get("dndStatus", "?")
+            message = p.get("userStatus", "?")
+            telephony = p.get("telephonyStatus", "?")
+            return f"Status: {status}\nDND: {dnd}\nUser Status: {message}\nTelephony: {telephony}"
+
+        @mcp.tool()
+        async def ringcentral_list_extensions(ctx: Context, limit: int = 25) -> str:
+            """List extensions in the RingCentral account.
+
+            Args:
+                limit: Max results (default: 25)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/account/~/extension", service="RingCentral", action="list extensions", params={"perPage": limit})
+            if err:
+                return err
+            records = r.json().get("records", [])
+            if not records:
+                return "No extensions found."
+            lines = []
+            for ext in records:
+                name = ext.get("name", "?")
+                ext_num = ext.get("extensionNumber", "?")
+                status = ext.get("status", "?")
+                ext_type = ext.get("type", "?")
+                lines.append(f"{name} | Ext: {ext_num} | Type: {ext_type} | Status: {status}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def ringcentral_get_voicemail(ctx: Context, limit: int = 10) -> str:
+            """Get recent voicemail messages from RingCentral.
+
+            Args:
+                limit: Max results (default: 10)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/account/~/extension/~/message-store", service="RingCentral", action="get voicemail", params={"messageType": "VoiceMail", "perPage": limit})
+            if err:
+                return err
+            records = r.json().get("records", [])
+            if not records:
+                return "No voicemail messages found."
+            lines = []
+            for m in records:
+                created = m.get("creationTime", "?")[:16] if m.get("creationTime") else "?"
+                caller = m.get("from", {}).get("name", m.get("from", {}).get("phoneNumber", "Unknown"))
+                read_status = m.get("readStatus", "?")
+                lines.append(f"{created} | From: {caller} | Read: {read_status}")
             return "\n".join(lines)

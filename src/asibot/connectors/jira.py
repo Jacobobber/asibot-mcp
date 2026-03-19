@@ -10,6 +10,8 @@ from asibot.connectors.pagination import collect, paginate_offset
 
 logger = logging.getLogger(__name__)
 
+_JIRA_SPRINT_STATES = frozenset({"active", "closed", "future"})
+
 
 class JiraConnector(Connector):
     def __init__(self, config=None):
@@ -38,7 +40,7 @@ class JiraConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
             if err:
                 return err
             pages = paginate_offset(
@@ -74,7 +76,7 @@ class JiraConnector(Connector):
             err = validation.validate_issue_key(issue_key)
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(
@@ -115,7 +117,7 @@ class JiraConnector(Connector):
                 limit: Max results (default: 50)
             """
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
             if err:
                 return err
             pages = paginate_offset(
@@ -142,7 +144,7 @@ class JiraConnector(Connector):
                 limit: Max results (default: 20)
             """
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "atlassian", level="read")
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
             if err:
                 return err
             pages = paginate_offset(
@@ -182,7 +184,7 @@ class JiraConnector(Connector):
             err = validation.validate_content(summary, "summary")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "atlassian", level="write")
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="write")
             if err:
                 return err
             payload = {
@@ -222,7 +224,7 @@ class JiraConnector(Connector):
             err = validation.validate_content(comment, "comment")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "atlassian", level="write")
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="write")
             if err:
                 return err
             payload = {
@@ -240,3 +242,92 @@ class JiraConnector(Connector):
             if err:
                 return err
             return f"Comment added to {issue_key}."
+
+        @mcp.tool()
+        async def jira_list_sprints(board_id: str, ctx: Context, state: str = "active") -> str:
+            """List sprints for a Jira board.
+
+            Args:
+                board_id: The Jira board ID
+                state: Sprint state filter: active, closed, or future (default: active)
+            """
+            err = validation.validate_id(board_id, "board_id")
+            if err:
+                return err
+            if state not in _JIRA_SPRINT_STATES:
+                return f"Invalid state: '{state}'. Allowed: {', '.join(sorted(_JIRA_SPRINT_STATES))}"
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
+            if err:
+                return err
+            domain = token_store.get_credentials(uid, "atlassian").get("domain", "")
+            url = f"https://{domain}/rest/agile/1.0/board/{board_id}/sprint"
+            r, err = await token_store.safe_request(
+                client, "GET", url,
+                service="Jira", action="list sprints",
+                params={"state": state},
+            )
+            if err:
+                return err
+            sprints = r.json().get("values", [])
+            if not sprints:
+                return f"No {state} sprints found."
+            lines = []
+            for s in sprints:
+                lines.append(
+                    f"{s.get('name', '?')} (ID: {s.get('id', '?')})\n"
+                    f"  State: {s.get('state', '?')} | Start: {s.get('startDate', '?')} | End: {s.get('endDate', '?')}"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def jira_list_transitions(issue_key: str, ctx: Context) -> str:
+            """List available transitions for a Jira issue.
+
+            Args:
+                issue_key: Issue key (e.g., "PROJ-123")
+            """
+            err = validation.validate_issue_key(issue_key)
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"/issue/{issue_key}/transitions",
+                service="Jira", action="list transitions",
+            )
+            if err:
+                return err
+            transitions = r.json().get("transitions", [])
+            if not transitions:
+                return f"No transitions available for {issue_key}."
+            return "\n".join(
+                f"ID: {t.get('id', '?')} | {t.get('name', '?')}"
+                for t in transitions
+            )
+
+        @mcp.tool()
+        async def jira_transition_issue(issue_key: str, transition_id: str, ctx: Context) -> str:
+            """Transition a Jira issue to a new status.
+
+            Args:
+                issue_key: Issue key (e.g., "PROJ-123")
+                transition_id: The transition ID (from jira_list_transitions)
+            """
+            err = validation.validate_issue_key(issue_key)
+            if err:
+                return err
+            err = validation.validate_id(transition_id, "transition_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"/issue/{issue_key}/transitions",
+                service="Jira", action="transition issue",
+                json={"transition": {"id": transition_id}},
+            )
+            if err:
+                return err
+            return f"Transitioned {issue_key} with transition {transition_id}."

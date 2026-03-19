@@ -1,128 +1,143 @@
 """API key authentication and user store.
 
-Users are stored encrypted at ~/.asibot/users.json.
+All user data lives in PostgreSQL via the db module.
 """
 
 import logging
 import secrets
 from datetime import datetime, timezone
-from pathlib import Path
 
-from asibot.config import settings
-from asibot.crypto import load_encrypted, save_encrypted
+from asibot.roles import VALID_ROLES
 
 logger = logging.getLogger(__name__)
 
-_users: dict[str, dict] = {}  # api_key -> user profile
-_store_path: Path = settings.data_dir / "users.json"
 
-
-def _load() -> None:
-    global _users
-    _users = load_encrypted(_store_path)
-
-
-def _save() -> None:
-    settings.ensure_dirs()
-    save_encrypted(_store_path, _users)
-
-
-def create_user(email: str, name: str, role: str = "user") -> dict:
+async def create_user(email: str, name: str, role: str | None = None) -> dict:
     """Create a new user or return existing one by email.
 
-    If the user already exists and the role differs, update it (supports
-    re-setup syncing from M365 groups).
+    If role is None, the first user gets 'admin', subsequent users get 'user'.
     """
-    _load()
+    from asibot import db
 
-    # Check if user already exists
-    for key, user in _users.items():
-        if user["user_id"] == email:
-            if user.get("role") != role:
-                user["role"] = role
-                _save()
-                logger.info("Updated role for %s to %s", email, role)
-            else:
-                logger.info("User already exists: %s", email)
-            return user
+    existing = await db.get_user_by_email(email)
+    if existing:
+        logger.info("User already exists: %s", email)
+        return existing
+
+    if role is None:
+        users = await db.list_users()
+        role = "admin" if len(users) == 0 else "user"
 
     api_key = f"asb_{secrets.token_urlsafe(32)}"
-    user = {
-        "user_id": email,
-        "name": name,
-        "api_key": api_key,
-        "role": role,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _users[api_key] = user
-    _save()
-    logger.info("Created user: %s (%s) role=%s", name, email, role)
+    created_at = datetime.now(timezone.utc).isoformat()
+    await db.create_user(email, name, api_key, created_at, role)
+    user = await db.get_user_by_email(email)
+    logger.info("Created user: %s (%s) with role '%s'", name, email, role)
     return user
 
 
-def get_user_by_key(api_key: str) -> dict | None:
+async def get_user_by_key(api_key: str) -> dict | None:
     """Look up user by API key."""
-    _load()
-    return _users.get(api_key)
+    from asibot import db
+    return await db.get_user_by_key(api_key)
 
 
-def get_user_by_email(email: str) -> dict | None:
+async def get_user_by_email(email: str) -> dict | None:
     """Look up user by email."""
-    _load()
-    for user in _users.values():
-        if user["user_id"] == email:
-            return user
-    return None
+    from asibot import db
+    return await db.get_user_by_email(email)
 
 
-def rotate_key(email: str) -> dict | None:
-    """Generate a new API key for a user. Invalidates the old key.
+async def get_role(email: str) -> str:
+    """Get the role for a user. Defaults to 'user' if not found."""
+    user = await get_user_by_email(email)
+    if user:
+        return user.get("role", "user")
+    return "user"
 
-    Returns the updated user dict, or None if user not found.
+
+async def set_role(email: str, role: str, *, admin_id: str | None = None) -> dict | None:
+    """Set a user's role. Returns updated user or None if not found.
+
+    When *admin_id* is provided the role change and an audit event are
+    written inside a single database transaction so they either both
+    persist or neither does.
     """
-    _load()
-    for old_key, user in list(_users.items()):
-        if user["user_id"] == email:
-            new_key = f"asb_{secrets.token_urlsafe(32)}"
-            user["api_key"] = new_key
-            user["key_rotated_at"] = datetime.now(timezone.utc).isoformat()
-            del _users[old_key]
-            _users[new_key] = user
-            _save()
-            logger.info("Rotated API key for user %s", email)
-            return user
-    return None
-
-
-def list_users() -> list[dict]:
-    """List all registered users."""
-    _load()
-    return list(_users.values())
-
-
-def get_role(email: str) -> str:
-    """Get the role for a user. Returns 'user' if not set or user not found."""
-    user = get_user_by_email(email)
-    if not user:
-        return "user"
-    return user.get("role", "user")
-
-
-def set_role(email: str, role: str) -> dict | None:
-    """Set the role for a user. Returns updated user or None if not found."""
-    from asibot.roles import VALID_ROLES
+    from asibot import audit, db
 
     if role not in VALID_ROLES:
-        return None
-    user = get_user_by_email(email)
+        audit.log_event(
+            user_id=email,
+            event="role_change",
+            tool="admin",
+            args={
+                "attempted_role": role,
+                "error": f"Invalid role. Must be one of {sorted(VALID_ROLES)}",
+                "changed_by": admin_id or "unknown",
+            },
+            service="rbac",
+            success=False,
+        )
+        raise ValueError(f"Invalid role: {role}. Must be one of {VALID_ROLES}")
+
+    user = await db.get_user_by_email(email)
     if not user:
+        audit.log_event(
+            user_id=email,
+            event="role_change",
+            tool="admin",
+            args={
+                "new_role": role,
+                "error": "User not found",
+                "changed_by": admin_id or "unknown",
+            },
+            service="rbac",
+            success=False,
+        )
         return None
-    user["role"] = role
-    _save()
-    return user
+
+    if admin_id is not None:
+        updated = await db.set_role_with_audit(email, role, admin_id=admin_id)
+    else:
+        updated = await db.set_role(email, role)
+
+    if updated:
+        old_role = user.get("role", "user")
+        logger.info("Set role '%s' for user %s (was '%s')", role, email, old_role)
+        audit.log_event(
+            user_id=email,
+            event="role_change",
+            tool="admin",
+            args={
+                "old_role": old_role,
+                "new_role": role,
+                "changed_by": admin_id or "unknown",
+            },
+            service="rbac",
+            success=True,
+        )
+    return updated
 
 
-def count_admins() -> int:
-    """Count users with admin role."""
-    _load()
-    return sum(1 for u in _users.values() if u.get("role") == "admin")
+async def rotate_key(email: str) -> dict | None:
+    """Generate a new API key for a user. Invalidates the old key."""
+    from asibot import db
+
+    new_key = f"asb_{secrets.token_urlsafe(32)}"
+    rotated_at = datetime.now(timezone.utc).isoformat()
+    updated = await db.rotate_key(email, new_key, rotated_at)
+    if updated:
+        logger.info("Rotated API key for user %s", email)
+    return updated
+
+
+async def list_users() -> list[dict]:
+    """List all registered users."""
+    from asibot import db
+    return await db.list_users()
+
+
+async def count_admins() -> int:
+    """Count the number of admin users."""
+    users = await list_users()
+    return sum(1 for u in users if u.get("role") == "admin")

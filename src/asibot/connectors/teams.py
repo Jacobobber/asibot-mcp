@@ -107,6 +107,68 @@ class TeamsConnector(Connector):
             return "\n\n".join(lines) if lines else "No text messages."
 
         @mcp.tool()
+        async def teams_list_members(team_id: str, ctx: Context) -> str:
+            """List members of a Team.
+
+            Args:
+                team_id: The team ID
+            """
+            err = validation.validate_id(team_id, "team_id")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{GRAPH}/teams/{team_id}/members",
+                service="Teams", action="list members",
+            )
+            if err:
+                return err
+            members = r.json().get("value", [])
+            if not members:
+                return "No members found."
+            lines = []
+            for m in members:
+                roles = m.get("roles", [])
+                role_str = ", ".join(roles) if roles else "member"
+                email = m.get("email", "")
+                email_str = f"\n  Email: {email}" if email else ""
+                lines.append(f"{m.get('displayName', '?')} ({role_str}){email_str}")
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def teams_send_message(team_id: str, channel_id: str, message: str, ctx: Context) -> str:
+            """Send a message to a Teams channel.
+
+            Args:
+                team_id: The team ID
+                channel_id: The channel ID
+                message: Message content
+            """
+            err = validation.validate_id(team_id, "team_id")
+            if err:
+                return err
+            err = validation.validate_id(channel_id, "channel_id")
+            if err:
+                return err
+            err = validation.validate_content(message, "message")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "teams", "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST",
+                f"{GRAPH}/teams/{team_id}/channels/{channel_id}/messages",
+                service="Teams", action="send message",
+                json={"body": {"content": message}},
+            )
+            if err:
+                return err
+            return "Message sent."
+
+        @mcp.tool()
         async def teams_search_messages(query: str, ctx: Context, limit: int = 10) -> str:
             """Search across all your Teams messages.
 

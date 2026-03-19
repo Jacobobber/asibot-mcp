@@ -1,6 +1,8 @@
 """Zoom connector: meetings and recordings via Zoom REST API."""
 
 import logging
+import time
+import urllib.parse
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
@@ -48,7 +50,7 @@ class ZoomConnector(Connector):
             Args:
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "zoom", level="read")
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "zoom")
@@ -84,7 +86,7 @@ class ZoomConnector(Connector):
             Args:
                 meeting_id: The Zoom meeting ID
             """
-            client, uid, err = token_store.require_service(ctx, "zoom", level="read")
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "zoom")
@@ -127,7 +129,7 @@ class ZoomConnector(Connector):
                 if err:
                     return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "zoom", level="read")
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "zoom")
@@ -164,3 +166,116 @@ class ZoomConnector(Connector):
                     f"{m.get('topic', 'Untitled')}\n  ID: {m.get('id', '?')} | Start: {m.get('start_time', '?')[:16]} | Files: {file_info}"
                 )
             return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def zoom_list_participants(meeting_id: str, ctx: Context) -> str:
+            """List participants of a past Zoom meeting.
+
+            Args:
+                meeting_id: The Zoom meeting ID
+            """
+            err = validation.validate_id(meeting_id, "meeting_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "zoom")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            encoded_id = urllib.parse.quote(meeting_id, safe="")
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/past_meetings/{encoded_id}/participants",
+                service="Zoom", action="list participants",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if err:
+                return err
+            participants = r.json().get("participants", [])
+            if not participants:
+                return "No participants found."
+            return "\n".join(
+                f"{p.get('name', 'Unknown')} | Email: {p.get('user_email', '?')} | Joined: {p.get('join_time', '?')} | Duration: {p.get('duration', '?')} min"
+                for p in participants
+            )
+
+        @mcp.tool()
+        async def zoom_list_past_meetings(ctx: Context, from_date: str = "", to_date: str = "", limit: int = 10) -> str:
+            """List past Zoom meetings.
+
+            Args:
+                from_date: Start date (YYYY-MM-DD, optional)
+                to_date: End date (YYYY-MM-DD, optional)
+                limit: Max results (default: 10)
+            """
+            if from_date:
+                err = validation.validate_date(from_date, "from_date")
+                if err:
+                    return err
+            if to_date:
+                err = validation.validate_date(to_date, "to_date")
+                if err:
+                    return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "zoom")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            params: dict = {"page_size": limit, "type": "previous_meetings"}
+            if from_date:
+                params["from"] = from_date
+            if to_date:
+                params["to"] = to_date
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/users/me/meetings",
+                service="Zoom", action="list past meetings",
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+            )
+            if err:
+                return err
+            meetings = r.json().get("meetings", [])
+            if not meetings:
+                return "No past meetings found."
+            return "\n\n".join(
+                f"{m.get('topic', 'Untitled')}\n  ID: {m['id']} | Start: {m.get('start_time', '?')} | Duration: {m.get('duration', '?')} min"
+                for m in meetings
+            )
+
+        @mcp.tool()
+        async def zoom_get_recording_transcript(meeting_id: str, ctx: Context) -> str:
+            """Get the VTT transcript for a Zoom meeting recording.
+
+            Args:
+                meeting_id: The Zoom meeting ID
+            """
+            err = validation.validate_id(meeting_id, "meeting_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "zoom")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            encoded_id = urllib.parse.quote(meeting_id, safe="")
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/meetings/{encoded_id}/recordings",
+                service="Zoom", action="get recording transcript",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if err:
+                return err
+            files = r.json().get("recording_files", [])
+            for f in files:
+                if f.get("file_type") == "TRANSCRIPT" or f.get("file_extension") == "VTT":
+                    return f"Transcript download URL: {f.get('download_url', 'N/A')}"
+            return "No VTT transcript found for this meeting."

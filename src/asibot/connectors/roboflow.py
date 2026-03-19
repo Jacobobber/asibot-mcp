@@ -29,7 +29,7 @@ class RoboflowConnector(Connector):
         @mcp.tool()
         async def roboflow_list_projects(ctx: Context) -> str:
             """List all projects in your Roboflow workspace."""
-            client, uid, err = token_store.require_service(ctx, "roboflow", level="read")
+            client, uid, err = await token_store.require_service(ctx, "roboflow", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "roboflow")
@@ -64,7 +64,7 @@ class RoboflowConnector(Connector):
             err = validation.validate_id(project_id, "project_id")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "roboflow", level="read")
+            client, uid, err = await token_store.require_service(ctx, "roboflow", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "GET", f"{API}/{project_id}", service="Roboflow", action="get project")
@@ -80,3 +80,105 @@ class RoboflowConnector(Connector):
                 latest = versions[-1]
                 output += f"\nLatest version: v{latest.get('id', '?')} | Images: {latest.get('images', '?')}"
             return output
+
+        @mcp.tool()
+        async def roboflow_list_versions(project_id: str, ctx: Context) -> str:
+            """List all versions of a Roboflow project.
+
+            Args:
+                project_id: The project ID or URL slug
+            """
+            err = validation.validate_id(project_id, "project_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "roboflow", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "roboflow")
+            workspace = creds.get("workspace", "")
+            if workspace:
+                url = f"{API}/{workspace}/{project_id}"
+            else:
+                url = f"{API}/{project_id}"
+            r, err = await token_store.safe_request(client, "GET", url, service="Roboflow", action="list versions")
+            if err:
+                return err
+            data = r.json()
+            versions = data.get("versions", [])
+            if not versions:
+                return "No versions found for this project."
+            lines = []
+            for v in versions:
+                vid = v.get("id", "?")
+                images = v.get("images", "?")
+                created = v.get("created", "?")
+                lines.append(f"v{vid} | Images: {images} | Created: {created}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def roboflow_get_version(project_id: str, version_id: str, ctx: Context) -> str:
+            """Get details about a specific version of a Roboflow project.
+
+            Args:
+                project_id: The project ID or URL slug
+                version_id: The version number
+            """
+            err = validation.validate_id(project_id, "project_id")
+            if err:
+                return err
+            err = validation.validate_id(version_id, "version_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "roboflow", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "roboflow")
+            workspace = creds.get("workspace", "")
+            if workspace:
+                url = f"{API}/{workspace}/{project_id}/{version_id}"
+            else:
+                url = f"{API}/{project_id}/{version_id}"
+            r, err = await token_store.safe_request(client, "GET", url, service="Roboflow", action="get version")
+            if err:
+                return err
+            v = r.json()
+            vid = v.get("id", version_id)
+            images = v.get("images", "?")
+            created = v.get("created", "?")
+            augmented = v.get("augmented", "?")
+            preprocessing = v.get("preprocessing", "?")
+            return f"Version: v{vid}\nImages: {images}\nCreated: {created}\nAugmented: {augmented}\nPreprocessing: {preprocessing}"
+
+        @mcp.tool()
+        async def roboflow_get_model(project_id: str, version_id: str, ctx: Context) -> str:
+            """Get model metrics for a specific version of a Roboflow project.
+
+            Args:
+                project_id: The project ID or URL slug
+                version_id: The version number
+            """
+            err = validation.validate_id(project_id, "project_id")
+            if err:
+                return err
+            err = validation.validate_id(version_id, "version_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "roboflow", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "roboflow")
+            workspace = creds.get("workspace", "")
+            if workspace:
+                url = f"{API}/{workspace}/{project_id}/{version_id}"
+            else:
+                url = f"{API}/{project_id}/{version_id}"
+            r, err = await token_store.safe_request(client, "GET", url, service="Roboflow", action="get model")
+            if err:
+                return err
+            data = r.json()
+            model = data.get("model", data)
+            mAP = model.get("map", model.get("mAP", "?"))
+            precision = model.get("precision", "?")
+            recall = model.get("recall", "?")
+            model_type = model.get("type", model.get("fromScratch", "?"))
+            return f"Model for {project_id} v{version_id}\nmAP: {mAP}\nPrecision: {precision}\nRecall: {recall}\nType: {model_type}"

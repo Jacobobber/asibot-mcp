@@ -1,5 +1,6 @@
 """Notion connector: pages, databases, search via Notion API."""
 
+import json
 import logging
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -73,7 +74,7 @@ class NotionConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "notion", level="read")
+            client, uid, err = await token_store.require_service(ctx, "notion", level="read")
             if err:
                 return err
             pages = paginate_cursor(
@@ -119,7 +120,7 @@ class NotionConnector(Connector):
             err = validation.validate_id(page_id, "page_id")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "notion", level="read")
+            client, uid, err = await token_store.require_service(ctx, "notion", level="read")
             if err:
                 return err
             # Fetch page metadata
@@ -148,7 +149,7 @@ class NotionConnector(Connector):
             Args:
                 limit: Max results (default: 10)
             """
-            client, uid, err = token_store.require_service(ctx, "notion", level="read")
+            client, uid, err = await token_store.require_service(ctx, "notion", level="read")
             if err:
                 return err
             pages = paginate_cursor(
@@ -185,7 +186,7 @@ class NotionConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "notion", level="read")
+            client, uid, err = await token_store.require_service(ctx, "notion", level="read")
             if err:
                 return err
             pages = paginate_cursor(
@@ -226,3 +227,97 @@ class NotionConnector(Connector):
                         parts.append(f"{key}: {'Yes' if val.get('checkbox') else 'No'}")
                 lines.append(f"ID: {row.get('id', '?')}\n  " + " | ".join(parts))
             return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def notion_create_page(parent_id: str, title: str, ctx: Context, content: str = "") -> str:
+            """Create a new Notion page.
+
+            Args:
+                parent_id: Parent page ID
+                title: Page title
+                content: Optional paragraph text content
+            """
+            err = validation.validate_id(parent_id, "parent_id")
+            if err:
+                return err
+            err = validation.validate_content(title, "title")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "notion", level="write")
+            if err:
+                return err
+            body = {
+                "parent": {"page_id": parent_id},
+                "properties": {"title": [{"text": {"content": title}}]},
+            }
+            if content:
+                body["children"] = [
+                    {
+                        "object": "block",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": [{"type": "text", "text": {"content": content}}]},
+                    }
+                ]
+            r, err = await token_store.safe_request(client, "POST", f"{API}/v1/pages", service="Notion", action="create page", json=body)
+            if err:
+                return err
+            data = r.json()
+            return f"Page created. ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def notion_update_page(page_id: str, ctx: Context, properties_json: str = "") -> str:
+            """Update properties of a Notion page.
+
+            Args:
+                page_id: Page ID (UUID)
+                properties_json: JSON string of properties to update
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            err = validation.validate_content(properties_json, "properties_json")
+            if err:
+                return err
+            try:
+                properties = json.loads(properties_json)
+            except (json.JSONDecodeError, TypeError):
+                return "Invalid properties_json: must be valid JSON."
+            client, uid, err = await token_store.require_service(ctx, "notion", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "PATCH", f"{API}/v1/pages/{page_id}", service="Notion", action="update page", json={"properties": properties})
+            if err:
+                return err
+            data = r.json()
+            return f"Page updated. ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def notion_create_database_entry(database_id: str, ctx: Context, properties_json: str = "") -> str:
+            """Create a new entry in a Notion database.
+
+            Args:
+                database_id: Database ID (UUID)
+                properties_json: JSON string of properties for the new entry
+            """
+            err = validation.validate_id(database_id, "database_id")
+            if err:
+                return err
+            err = validation.validate_content(properties_json, "properties_json")
+            if err:
+                return err
+            try:
+                properties = json.loads(properties_json)
+            except (json.JSONDecodeError, TypeError):
+                return "Invalid properties_json: must be valid JSON."
+            client, uid, err = await token_store.require_service(ctx, "notion", level="write")
+            if err:
+                return err
+            body = {
+                "parent": {"database_id": database_id},
+                "properties": properties,
+            }
+            r, err = await token_store.safe_request(client, "POST", f"{API}/v1/pages", service="Notion", action="create database entry", json=body)
+            if err:
+                return err
+            data = r.json()
+            return f"Entry created. ID: {data.get('id', '?')}"

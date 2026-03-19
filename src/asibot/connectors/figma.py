@@ -37,7 +37,7 @@ class FigmaConnector(Connector):
             err = validation.validate_id(team_id, "team_id")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "figma", level="read")
+            client, uid, err = await token_store.require_service(ctx, "figma", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "GET", f"{API}/v1/teams/{team_id}/projects", service="Figma", action="list projects")
@@ -58,7 +58,7 @@ class FigmaConnector(Connector):
             err = validation.validate_id(project_id, "project_id")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "figma", level="read")
+            client, uid, err = await token_store.require_service(ctx, "figma", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "GET", f"{API}/v1/projects/{project_id}/files", service="Figma", action="list files")
@@ -83,7 +83,7 @@ class FigmaConnector(Connector):
             err = validation.validate_id(file_key, "file_key")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "figma", level="read")
+            client, uid, err = await token_store.require_service(ctx, "figma", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "GET", f"{API}/v1/files/{file_key}", service="Figma", action="get file", params={"depth": 1})
@@ -110,7 +110,7 @@ class FigmaConnector(Connector):
             err = validation.validate_id(file_key, "file_key")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "figma", level="read")
+            client, uid, err = await token_store.require_service(ctx, "figma", level="read")
             if err:
                 return err
             pages = paginate_cursor(
@@ -134,4 +134,86 @@ class FigmaConnector(Connector):
                 message = c.get("message", "")
                 resolved = " [RESOLVED]" if c.get("resolved_at") else ""
                 lines.append(f"[{created[:16] if created and created != '?' else created}] {user}{resolved}:\n  {message}")
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def figma_get_file_versions(file_key: str, ctx: Context) -> str:
+            """Get version history of a Figma file.
+
+            Args:
+                file_key: The Figma file key
+            """
+            err = validation.validate_id(file_key, "file_key")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "figma", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/files/{file_key}/versions", service="Figma", action="get file versions")
+            if err:
+                return err
+            versions = r.json().get("versions", [])
+            if not versions:
+                return "No versions found."
+            lines = []
+            for v in versions:
+                user = v.get("user", {}).get("handle", "?")
+                label = v.get("label", "")
+                label_str = f" ({label})" if label else ""
+                created = v.get("created_at", "?")
+                lines.append(f"Version {v.get('id', '?')}{label_str}\n  By: {user} | Created: {created[:16] if created and created != '?' else created}")
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def figma_get_components(file_key: str, ctx: Context) -> str:
+            """Get components in a Figma file.
+
+            Args:
+                file_key: The Figma file key
+            """
+            err = validation.validate_id(file_key, "file_key")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "figma", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/files/{file_key}/components", service="Figma", action="get components")
+            if err:
+                return err
+            meta = r.json().get("meta", {})
+            components = meta.get("components", [])
+            if not components:
+                return "No components found."
+            lines = []
+            for c in components:
+                desc = c.get("description", "")
+                desc_str = f"\n  Description: {desc}" if desc else ""
+                lines.append(f"{c.get('name', '?')} (key: {c.get('key', '?')}){desc_str}")
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def figma_get_styles(file_key: str, ctx: Context) -> str:
+            """Get styles in a Figma file.
+
+            Args:
+                file_key: The Figma file key
+            """
+            err = validation.validate_id(file_key, "file_key")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "figma", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/files/{file_key}/styles", service="Figma", action="get styles")
+            if err:
+                return err
+            meta = r.json().get("meta", {})
+            styles = meta.get("styles", [])
+            if not styles:
+                return "No styles found."
+            lines = []
+            for s in styles:
+                desc = s.get("description", "")
+                desc_str = f"\n  Description: {desc}" if desc else ""
+                lines.append(f"{s.get('name', '?')} (key: {s.get('key', '?')}, type: {s.get('style_type', '?')}){desc_str}")
             return "\n\n".join(lines)

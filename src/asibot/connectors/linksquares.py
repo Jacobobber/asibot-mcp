@@ -34,7 +34,7 @@ class LinkSquaresConnector(Connector):
             Args:
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "linksquares", level="read")
+            client, uid, err = await token_store.require_service(ctx, "linksquares", level="read")
             if err:
                 return err
             pages = paginate_offset(
@@ -72,7 +72,7 @@ class LinkSquaresConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "linksquares", level="read")
+            client, uid, err = await token_store.require_service(ctx, "linksquares", level="read")
             if err:
                 return err
             pages = paginate_offset(
@@ -95,4 +95,93 @@ class LinkSquaresConnector(Connector):
                 counterparty = c.get("counterparty", c.get("counter_party", "?"))
                 status = c.get("status", "?")
                 lines.append(f"{title} (ID: {cid}) | Counterparty: {counterparty} | Status: {status}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def linksquares_get_contract(contract_id: str, ctx: Context) -> str:
+            """Get full details of a specific contract from LinkSquares.
+
+            Args:
+                contract_id: The contract ID
+            """
+            err = validation.validate_id(contract_id, "contract_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "linksquares", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/contracts/{contract_id}", service="LinkSquares", action="get contract")
+            if err:
+                return err
+            c = r.json()
+            title = c.get("title", c.get("name", "Untitled"))
+            status = c.get("status", "?")
+            counterparty = c.get("counterparty", c.get("counter_party", "?"))
+            effective = c.get("effective_date", "?")
+            expiration = c.get("expiration_date", "?")
+            doc_type = c.get("type", c.get("document_type", "?"))
+            return (
+                f"{title}\n"
+                f"ID: {contract_id}\n"
+                f"Status: {status}\n"
+                f"Counterparty: {counterparty}\n"
+                f"Type: {doc_type}\n"
+                f"Effective: {effective}\n"
+                f"Expiration: {expiration}"
+            )
+
+        @mcp.tool()
+        async def linksquares_list_smart_values(contract_id: str, ctx: Context) -> str:
+            """List smart values (extracted data) for a contract in LinkSquares.
+
+            Args:
+                contract_id: The contract ID
+            """
+            err = validation.validate_id(contract_id, "contract_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "linksquares", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/contracts/{contract_id}/smart-values", service="LinkSquares", action="list smart values")
+            if err:
+                return err
+            data = r.json()
+            values = data.get("smart_values", data.get("smartValues", data.get("data", [])))
+            if not values:
+                return "No smart values found for this contract."
+            lines = []
+            for sv in values:
+                name = sv.get("name", sv.get("field", "?"))
+                val = sv.get("value", "?")
+                lines.append(f"{name}: {val}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def linksquares_list_amendments(contract_id: str, ctx: Context) -> str:
+            """List amendments for a contract in LinkSquares.
+
+            Args:
+                contract_id: The contract ID
+            """
+            err = validation.validate_id(contract_id, "contract_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "linksquares", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/contracts/{contract_id}/amendments", service="LinkSquares", action="list amendments")
+            if err:
+                return err
+            data = r.json()
+            amendments = data.get("amendments", data.get("data", []))
+            if not amendments:
+                return "No amendments found for this contract."
+            lines = []
+            for a in amendments:
+                aid = a.get("id", "?")
+                title = a.get("title", a.get("name", "Untitled"))
+                date = a.get("effective_date", a.get("date", "?"))
+                status = a.get("status", "?")
+                lines.append(f"{title} (ID: {aid}) | Effective: {date} | Status: {status}")
             return "\n".join(lines)

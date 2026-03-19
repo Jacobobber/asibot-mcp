@@ -2,20 +2,18 @@
 
 import asyncio
 import atexit
-import functools
 import json
 import logging
 import secrets
 import signal
 import time
 from collections import deque
-from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
 
-from asibot import audit, auth, db, distributed_cache, http_pool, metrics, migrate, token_store, user_session, validation
+from asibot import audit, auth, db, http_pool, metrics, migrate, token_store, user_session
 from asibot.connectors import microsoft
 from asibot.config import settings, validate_for_production
 from asibot.connectors import registry
@@ -26,15 +24,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
-
-
-@asynccontextmanager
-async def _lifespan(app):
-    """Server lifespan: load sessions from DB on startup, close pool on shutdown."""
-    await user_session.load_sessions_from_db()
-    yield {}
-    await db.close_pool()
-
 
 mcp = FastMCP(
     "asibot",
@@ -47,128 +36,7 @@ mcp = FastMCP(
     ),
     host=settings.host,
     port=settings.port,
-    lifespan=_lifespan,
 )
-
-# --- Concurrency Controls ---
-
-# Global semaphore: limits total concurrent tool calls across all users
-_request_semaphore: asyncio.Semaphore | None = None
-
-# Per-user semaphores: limits concurrent tool calls per user
-_user_semaphores: dict[str, asyncio.Semaphore] = {}
-_user_semaphores_lock = asyncio.Lock()
-
-# Per-service semaphores: limits concurrent calls to each external service
-_service_semaphores: dict[str, asyncio.Semaphore] = {}
-_service_semaphores_lock = asyncio.Lock()
-
-# Metrics counters for concurrency
-requests_queued = 0
-requests_rejected = 0
-concurrent_active = 0
-
-
-def _get_request_semaphore() -> asyncio.Semaphore:
-    """Lazy-init the global request semaphore (must be called in async context)."""
-    global _request_semaphore
-    if _request_semaphore is None:
-        _request_semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
-    return _request_semaphore
-
-
-async def _get_user_semaphore(user_id: str) -> asyncio.Semaphore:
-    """Get or create a per-user semaphore."""
-    async with _user_semaphores_lock:
-        if user_id not in _user_semaphores:
-            _user_semaphores[user_id] = asyncio.Semaphore(settings.max_concurrent_per_user)
-        return _user_semaphores[user_id]
-
-
-async def _get_service_semaphore(service: str) -> asyncio.Semaphore:
-    """Get or create a per-service semaphore."""
-    async with _service_semaphores_lock:
-        if service not in _service_semaphores:
-            _service_semaphores[service] = asyncio.Semaphore(settings.max_concurrent_per_service)
-        return _service_semaphores[service]
-
-
-def concurrency_limited(service: str | None = None):
-    """Decorator that enforces global and per-user concurrency limits on tool handlers.
-
-    Args:
-        service: Optional external service name for per-service limiting.
-    """
-    def decorator(fn):
-        @functools.wraps(fn)
-        async def wrapper(*args, **kwargs):
-            global requests_queued, requests_rejected, concurrent_active
-
-            # Extract user_id from ctx if present
-            ctx = kwargs.get("ctx") or next(
-                (a for a in args if isinstance(a, Context)), None
-            )
-            user_id = None
-            if ctx:
-                uid, _ = user_session.require_user(ctx)
-                user_id = uid
-
-            # Try global semaphore (non-blocking check)
-            global_sem = _get_request_semaphore()
-            if global_sem.locked() and global_sem._value == 0:
-                requests_rejected += 1
-                return "Server at capacity, please retry in a moment"
-
-            requests_queued += 1
-            try:
-                # Acquire global semaphore
-                try:
-                    await asyncio.wait_for(global_sem.acquire(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    requests_rejected += 1
-                    return "Server at capacity, please retry in a moment"
-
-                try:
-                    # Acquire per-user semaphore
-                    if user_id:
-                        user_sem = await _get_user_semaphore(user_id)
-                        try:
-                            await asyncio.wait_for(user_sem.acquire(), timeout=5.0)
-                        except asyncio.TimeoutError:
-                            requests_rejected += 1
-                            return "Server at capacity, please retry in a moment"
-                    else:
-                        user_sem = None
-
-                    try:
-                        # Acquire per-service semaphore
-                        if service:
-                            svc_sem = await _get_service_semaphore(service)
-                            try:
-                                await asyncio.wait_for(svc_sem.acquire(), timeout=5.0)
-                            except asyncio.TimeoutError:
-                                requests_rejected += 1
-                                return "Server at capacity, please retry in a moment"
-                        else:
-                            svc_sem = None
-
-                        try:
-                            concurrent_active += 1
-                            return await fn(*args, **kwargs)
-                        finally:
-                            concurrent_active -= 1
-                            if svc_sem is not None:
-                                svc_sem.release()
-                    finally:
-                        if user_sem is not None:
-                            user_sem.release()
-                finally:
-                    global_sem.release()
-            finally:
-                requests_queued -= 1
-
-        return wrapper
-    return decorator
 
 
 # --- Instrumentation ---
@@ -187,7 +55,7 @@ def _install_tool_tracking() -> None:
         user_id = "anonymous"
         if context is not None:
             try:
-                uid, _ = user_session.require_user(context)
+                uid, _ = await user_session.require_user(context)
                 if uid:
                     user_id = uid
             except Exception:
@@ -255,12 +123,15 @@ def _install_session_tracking() -> None:
         ctx = mcp.get_context()
         user_id = "anonymous"
         try:
-            uid, _ = user_session.require_user(ctx)
+            uid, _ = await user_session.require_user(ctx)
             if uid:
                 user_id = uid
         except Exception:
             pass
 
+        audit.log_event(user_id, "session_start", metadata={
+            "tools_available": len(result),
+        })
         try:
             await db.log_event(user_id, "session_start", metadata={
                 "tools_available": len(result),
@@ -281,7 +152,6 @@ def _install_session_tracking() -> None:
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_setup(ctx: Context) -> str:
     """One-time account setup. Signs you in with Microsoft SSO and creates your API key.
 
@@ -293,7 +163,7 @@ async def asibot_setup(ctx: Context) -> str:
     if rate_err:
         return rate_err
     # Check if already authenticated
-    user_id, _ = user_session.require_user(ctx)
+    user_id, _ = await user_session.require_user(ctx)
     if user_id:
         user = await auth.get_user_by_email(user_id)
         if user:
@@ -340,13 +210,6 @@ async def asibot_setup(ctx: Context) -> str:
             return "Too many pending setups. Please try again later."
         await _persist_setup(setup_id, {"status": "pending", "_created_at": time.time()})
 
-    # Enforce concurrent polling task limit
-    global _active_polling_tasks
-    async with _active_polling_lock:
-        if _active_polling_tasks >= settings.max_concurrent_setups:
-            return "Too many pending setups. Please try again later."
-        _active_polling_tasks += 1
-
     # Poll for token in background
     task = asyncio.create_task(_complete_setup(
         tenant_id, client_id, device_code, expires_in, interval, setup_id
@@ -372,11 +235,6 @@ _pending_setups: dict[str, dict] = {}
 _pending_setups_lock = asyncio.Lock()
 _SETUP_TTL = 900  # 15 minutes — matches device code expiry
 _MAX_PENDING_SETUPS = 100
-_HARD_POLL_TIMEOUT = 15 * 60  # 15 minutes absolute max for any polling task
-_POLL_BACKOFF_INITIAL = 5  # Initial poll interval in seconds
-_POLL_BACKOFF_MAX = 30  # Maximum poll interval in seconds
-_active_polling_tasks = 0
-_active_polling_lock = asyncio.Lock()
 
 # Global rate limit for setup/OAuth flow requests (prevents enumeration & DoS)
 _SETUP_RATE_LIMIT = 10  # max new setups per window
@@ -480,8 +338,6 @@ async def _delete_setup(setup_id: str) -> None:
 
 def _on_task_done(task: asyncio.Task, setup_id: str) -> None:
     """Log unhandled exceptions from background setup tasks and mark them failed."""
-    global _active_polling_tasks
-    _active_polling_tasks = max(0, _active_polling_tasks - 1)
     if task.cancelled():
         return
     exc = task.exception()
@@ -615,8 +471,6 @@ async def _poll_device_code(
     Polls *token_url* until an access token is returned, then calls *on_success*
     with the token response. *on_success* should return the dict to store in
     ``_pending_setups`` (must include ``"status": "complete"``).
-
-    Uses a hard timeout of _HARD_POLL_TIMEOUT and exponential backoff.
     """
     # Validate token URL is a known OAuth provider (prevents redirection attacks)
     if not any(token_url.startswith(host) for host in _ALLOWED_TOKEN_HOSTS):
@@ -628,20 +482,16 @@ async def _poll_device_code(
         logger.error("%s: untrusted token endpoint %s", display_name, token_url)
         return
 
-    # Use the lesser of device code expiry and the hard timeout
-    effective_timeout = min(expires_in, _HARD_POLL_TIMEOUT)
-    deadline = time.time() + effective_timeout
-    current_interval = max(interval, _POLL_BACKOFF_INITIAL)
+    deadline = time.time() + expires_in
 
     while time.time() < deadline:
-        await asyncio.sleep(current_interval)
+        await asyncio.sleep(interval)
 
         try:
             async with httpx.AsyncClient() as http:
                 resp = await http.post(token_url, data=token_data, headers=token_headers)
         except httpx.RequestError as e:
             logger.warning("%s poll request failed: %s", display_name, e)
-            current_interval = min(current_interval * 2, _POLL_BACKOFF_MAX)
             continue
 
         data = resp.json()
@@ -664,11 +514,9 @@ async def _poll_device_code(
 
         error = data.get("error", "")
         if error == "authorization_pending":
-            # Exponential backoff on continued waiting
-            current_interval = min(current_interval * 1.5, _POLL_BACKOFF_MAX)
             continue
         elif error == "slow_down":
-            current_interval = min(current_interval + 5, _POLL_BACKOFF_MAX)
+            interval += 5
         else:
             await _set_pending_setup(setup_id, {
                 "status": "failed",
@@ -701,26 +549,8 @@ async def _complete_setup(
 
         email = profile.get("mail") or profile.get("userPrincipalName", "unknown")
         name = profile.get("displayName", email)
-
-        # Sync role from Azure AD group membership
-        role = "user"
-        if settings.admin_group_id:
-            try:
-                async with httpx.AsyncClient() as http:
-                    groups_resp = await http.get(
-                        "https://graph.microsoft.com/v1.0/me/memberOf",
-                        headers={"Authorization": f"Bearer {data['access_token']}"},
-                    )
-                    groups_resp.raise_for_status()
-                    group_ids = [
-                        g.get("id", "") for g in groups_resp.json().get("value", [])
-                    ]
-                    if settings.admin_group_id in group_ids:
-                        role = "admin"
-            except Exception:
-                logger.debug("Failed to check group membership for %s", email)
-
-        user = await auth.create_user(email, name, role=role)
+        user = await auth.create_user(email, name)
+        audit.log_event(email, "user_created")
         try:
             await db.log_event(email, "user_created")
         except Exception:
@@ -844,13 +674,6 @@ async def _start_device_code_flow(service: str, user_id: str) -> str:
             user_id=user_id, service=service,
         )
 
-    # Enforce concurrent polling task limit
-    global _active_polling_tasks
-    async with _active_polling_lock:
-        if _active_polling_tasks >= settings.max_concurrent_setups:
-            return "Too many pending setups. Please try again later."
-        _active_polling_tasks += 1
-
     task = asyncio.create_task(_complete_device_code_oauth(
         service, device_code, expires_in, interval, setup_id, user_id,
     ))
@@ -871,15 +694,13 @@ async def _complete_device_code_oauth(
     service: str, device_code: str, expires_in: int, interval: int,
     setup_id: str, user_id: str,
 ) -> None:
-    """Poll an OAuth provider for a token, then store credentials.
-
-    Uses a hard timeout of _HARD_POLL_TIMEOUT and exponential backoff.
-    """
+    """Poll an OAuth provider for a token, then store credentials."""
     provider = _OAUTH_PROVIDERS[service]
 
     async def on_success(data: dict) -> dict:
         creds = provider["extract_creds"](data)
         token_store.set_credentials(user_id, service, creds)
+        audit.log_event(user_id, "service_connected", service=service)
         try:
             await db.log_event(user_id, "service_connected", service=service)
         except Exception:
@@ -904,7 +725,6 @@ async def _complete_device_code_oauth(
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_setup_status(setup_id: str = "") -> str:
     """Check if your account setup is complete. Call this after signing in via browser.
 
@@ -964,10 +784,9 @@ async def asibot_setup_status(setup_id: str = "") -> str:
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_whoami(ctx: Context) -> str:
     """Check which user you're authenticated as."""
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
     user = await auth.get_user_by_email(user_id)
@@ -977,72 +796,19 @@ async def asibot_whoami(ctx: Context) -> str:
 
 
 @mcp.tool()
-@concurrency_limited()
-async def asibot_dashboard_login(ctx: Context) -> str:
-    """Get a personal link to the Asibot analytics dashboard.
-
-    Generates a time-limited dashboard access token for your account.
-    Admins see org-wide analytics; regular users see their own activity.
-    """
-    from asibot import dashboard_tokens, roles
-
-    user_id, err = user_session.require_user(ctx)
-    if err:
-        return err
-
-    user = auth.get_user_by_email(user_id)
-    if not user:
-        return "User not found. Run asibot_setup first."
-
-    user_role = user.get("role", "user")
-
-    # Check minimum role requirement
-    if not roles.has_permission(user_role, settings.dashboard_min_role):
-        return (
-            "Dashboard access requires higher privileges. "
-            "Contact your Asibot administrator to request access."
-        )
-
-    token = dashboard_tokens.create_token(
-        user_id=user_id,
-        user_name=user.get("name", user_id),
-        role=user_role,
-        ttl_seconds=settings.dashboard_token_ttl,
-    )
-
-    host = getattr(settings, "dashboard_host", "0.0.0.0")
-    port = getattr(settings, "dashboard_port", 8081)
-    display_host = "localhost" if host == "0.0.0.0" else host
-    url = f"http://{display_host}:{port}/?token={token}"
-
-    try:
-        await db.log_event(user_id, "dashboard_token_created")
-    except Exception:
-        pass
-
-    ttl_hours = settings.dashboard_token_ttl // 3600
-    scope = "full org dashboard" if user_role == "admin" else "your personal activity dashboard"
-    return (
-        f"Here's your {scope} link (valid for {ttl_hours}h):\n\n"
-        f"{url}\n\n"
-        f"This link is tied to your account and will expire automatically."
-    )
-
-
-@mcp.tool()
-@concurrency_limited()
 async def asibot_rotate_key(ctx: Context) -> str:
     """Generate a new API key. The old key stops working immediately.
 
     After rotation, update your Claude Desktop config with the new key.
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
     user = await auth.rotate_key(user_id)
     if not user:
         return "Could not rotate key — user not found."
     user_session.invalidate_user_sessions(user_id)
+    audit.log_event(user_id, "key_rotated")
     try:
         await db.log_event(user_id, "key_rotated")
     except Exception:
@@ -1057,14 +823,13 @@ async def asibot_rotate_key(ctx: Context) -> str:
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
     """Connect a service by providing your credentials. One-time per service.
 
     Args:
         service: Service name (e.g., "github", "atlassian", "notion", "zendesk", "figma", etc.)
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
 
@@ -1110,7 +875,6 @@ async def asibot_connect(service: str, ctx: Context, **kwargs) -> str:
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -> str:
     """Store credentials for a service. Called after asibot_connect explains what's needed.
 
@@ -1118,7 +882,7 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
         service: Service name (e.g., "github", "atlassian")
         credentials: JSON string with the required fields (e.g., '{"token": "ghp_xxx", "org": "myorg"}')
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
 
@@ -1134,20 +898,13 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
     if not isinstance(creds, dict):
         return "Credentials must be a JSON object, not an array or other type."
 
-    # Strip whitespace from all credential values
-    creds = validation.strip_credential_values(creds)
-
     required_fields, _ = token_store.get_required_fields(service)
     missing = [f for f in required_fields if not creds.get(f)]
     if missing:
         return f"Missing required fields: {', '.join(missing)}"
 
-    # Validate credential format before storing
-    val_err = validation.validate_credentials(service, creds)
-    if val_err:
-        return val_err
-
     token_store.set_credentials(user_id, service, creds)
+    audit.log_event(user_id, "service_connected", service=service)
     try:
         await db.log_event(user_id, "service_connected", service=service)
     except Exception:
@@ -1156,18 +913,18 @@ async def asibot_set_credentials(service: str, credentials: str, ctx: Context) -
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_disconnect(service: str, ctx: Context) -> str:
     """Remove your credentials for a service.
 
     Args:
         service: Service name to disconnect
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
 
     token_store.remove_credentials(user_id, service)
+    audit.log_event(user_id, "service_disconnected", service=service)
     try:
         await db.log_event(user_id, "service_disconnected", service=service)
     except Exception:
@@ -1176,10 +933,9 @@ async def asibot_disconnect(service: str, ctx: Context) -> str:
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_services(ctx: Context) -> str:
     """List all available services with connection status, enabled/disabled, and read/readwrite mode."""
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
 
@@ -1215,14 +971,13 @@ async def asibot_services(ctx: Context) -> str:
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_enable(service: str, ctx: Context) -> str:
     """Enable a service connector.
 
     Args:
         service: Service name (e.g., "github", "sharepoint")
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
     prefs = token_store.get_service_prefs(user_id, service)
@@ -1232,14 +987,13 @@ async def asibot_enable(service: str, ctx: Context) -> str:
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_disable(service: str, ctx: Context) -> str:
     """Disable a service connector. Tools for this service will not respond.
 
     Args:
         service: Service name (e.g., "github", "sharepoint")
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
     prefs = token_store.get_service_prefs(user_id, service)
@@ -1249,7 +1003,6 @@ async def asibot_disable(service: str, ctx: Context) -> str:
 
 
 @mcp.tool()
-@concurrency_limited()
 async def asibot_set_mode(service: str, mode: str, ctx: Context) -> str:
     """Set a service to read-only or read-write mode.
 
@@ -1257,7 +1010,7 @@ async def asibot_set_mode(service: str, mode: str, ctx: Context) -> str:
         service: Service name (e.g., "github", "outlook")
         mode: "read" for read-only, "readwrite" for full access
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return err
     if mode not in ("read", "readwrite"):
@@ -1368,7 +1121,6 @@ async def _async_shutdown() -> None:
     # Close connection pools, cached clients, and database
     await http_pool.close_all()
     await microsoft.close_all_clients()
-    await db.close_pool()
     await db.close_db()
     logger.info("Shutdown complete")
 
@@ -1429,11 +1181,7 @@ def main() -> None:
     asyncio.run(distributed_cache.init_cache())
 
     _setup_connectors()
-    metrics.start_metrics_server(
-        port=settings.metrics_port,
-        host=settings.metrics_host,
-        bearer_token=settings.metrics_bearer_token,
-    )
+    metrics.start_metrics_server()
     atexit.register(_cleanup)
 
     # Run async init (DB backend, background tasks)

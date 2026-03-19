@@ -117,6 +117,103 @@ class OutlookConnector(Connector):
                 return err
             return f'Email sent to {to}: "{subject}"'
 
+        @mcp.tool()
+        async def outlook_list_folders(ctx: Context) -> str:
+            """List your Outlook mail folders."""
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{GRAPH}/me/mailFolders",
+                service="Outlook", action="list folders",
+                params={"$top": 50},
+            )
+            if err:
+                return err
+            folders = r.json().get("value", [])
+            if not folders:
+                return "No folders found."
+            lines = []
+            for f in folders:
+                lines.append(
+                    f"{f.get('displayName', '?')}\n"
+                    f"  ID: {f.get('id', '')}\n"
+                    f"  Total: {f.get('totalItemCount', 0)}  Unread: {f.get('unreadItemCount', 0)}"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def outlook_get_attachments(message_id: str, ctx: Context) -> str:
+            """List attachments on an email (metadata only, no binary content).
+
+            Args:
+                message_id: The email message ID
+            """
+            err = validation.validate_id(message_id, "message_id")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{GRAPH}/me/messages/{message_id}/attachments",
+                service="Outlook", action="get attachments",
+            )
+            if err:
+                return err
+            attachments = r.json().get("value", [])
+            if not attachments:
+                return "No attachments."
+            lines = []
+            for a in attachments:
+                lines.append(
+                    f"{a.get('name', '?')}\n"
+                    f"  Type: {a.get('contentType', '?')}\n"
+                    f"  Size: {a.get('size', 0):,} bytes"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def calendar_create_event(subject: str, start: str, end: str, ctx: Context, body: str = "", attendees: str = "") -> str:
+            """Create a calendar event.
+
+            Args:
+                subject: Event subject/title
+                start: Start datetime (ISO format, e.g. 2024-03-15T10:00:00)
+                end: End datetime (ISO format, e.g. 2024-03-15T11:00:00)
+                body: Optional event body/description
+                attendees: Optional comma-separated email addresses
+            """
+            err = validation.validate_content(subject, "subject")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "calendar", "write")
+            if err:
+                return err
+            event = {
+                "subject": subject,
+                "start": {"dateTime": start, "timeZone": "UTC"},
+                "end": {"dateTime": end, "timeZone": "UTC"},
+            }
+            if body:
+                event["body"] = {"contentType": "text", "content": body}
+            if attendees:
+                emails = [e.strip() for e in attendees.split(",") if e.strip()]
+                for email in emails:
+                    err = validation.validate_email_address(email)
+                    if err:
+                        return err
+                event["attendees"] = [{"emailAddress": {"address": e}, "type": "required"} for e in emails]
+            r, err = await token_store.safe_request(
+                client, "POST", f"{GRAPH}/me/events",
+                service="Calendar", action="create event",
+                json=event,
+            )
+            if err:
+                return err
+            created = r.json()
+            return f"Event created: {created.get('subject', subject)}\n  ID: {created.get('id', '?')}\n  When: {start} — {end}"
+
         _ALLOWED_FOLDERS = frozenset({"inbox", "sentitems", "drafts", "deleteditems", "junkemail", "archive"})
 
         @mcp.tool()

@@ -8,184 +8,21 @@ Per-user files at ~/.asibot/users/{user_id}/:
 
 import asyncio
 import logging
-import threading
+import random
+import re as _re
 import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import httpx
 
-from asibot import user_session
+from asibot import http_pool, user_session, validation
+from asibot.circuit_breaker import get_breaker
 from asibot.crypto import load_encrypted, save_encrypted
 
 logger = logging.getLogger(__name__)
-
-
-# --- Global Per-Service Rate Limiter (sliding window) ---
-
-
-class GlobalRateLimiter:
-    """Thread-safe sliding window rate limiter, one window per service.
-
-    Limits the total number of requests across ALL users for a given external
-    service within a 60-second window.  Designed for production deployments
-    with 1000+ concurrent users where per-user limits alone are insufficient.
-    """
-
-    def __init__(self) -> None:
-        self._windows: dict[str, list[float]] = {}  # service -> sorted timestamps
-        self._lock = threading.Lock()
-        self._hits: dict[str, int] = {}  # service -> total hit count (metric)
-
-    def _get_limit(self, service: str) -> int:
-        from asibot.config import settings
-        return settings.global_rate_limits.get(service, settings.global_rate_limit_default)
-
-    def check(self, service: str) -> tuple[bool, int]:
-        """Check if a request is allowed for the given service.
-
-        Returns:
-            (allowed, retry_after_seconds).  If allowed is False, the caller
-            should back off for retry_after_seconds.
-        """
-        limit = self._get_limit(service)
-        now = time.monotonic()
-        window_start = now - 60.0
-
-        with self._lock:
-            timestamps = self._windows.get(service, [])
-            # Trim entries older than 60 seconds
-            timestamps = [t for t in timestamps if t > window_start]
-
-            if len(timestamps) >= limit:
-                # Estimate when the oldest entry will expire
-                retry_after = int(timestamps[0] - window_start) + 1
-                retry_after = max(retry_after, 1)
-                self._hits[service] = self._hits.get(service, 0) + 1
-                self._windows[service] = timestamps
-                return False, retry_after
-
-            timestamps.append(now)
-            self._windows[service] = timestamps
-            return True, 0
-
-    def get_hits(self, service: str) -> int:
-        """Return total number of rate-limit rejections for a service (metric)."""
-        with self._lock:
-            return self._hits.get(service, 0)
-
-    def reset(self) -> None:
-        """Reset all state (for testing)."""
-        with self._lock:
-            self._windows.clear()
-            self._hits.clear()
-
-
-# Singleton instance
-global_rate_limiter = GlobalRateLimiter()
-
-
-# --- S2S Token Cache (centralized, uses distributed cache) ---
-
-_TOKEN_MARGIN = 300  # refresh 5 min before expiry
-
-# Per-key locks for in-process deduplication (prevents two coroutines from
-# fetching the same token simultaneously within one process)
-_s2s_locks_guard = asyncio.Lock()
-_s2s_token_locks: dict[str, asyncio.Lock] = {}
-
-
-async def get_s2s_token(
-    *,
-    cache_key: str,
-    token_url: str,
-    grant_data: dict,
-    auth: tuple[str, str],
-    service_name: str,
-    send_as_params: bool = False,
-) -> str:
-    """Fetch an S2S OAuth token with distributed caching and per-key locking.
-
-    Args:
-        cache_key: Unique cache key (e.g., "zoom:<account_id>")
-        token_url: OAuth token endpoint URL
-        grant_data: Form data or params for the token request
-        auth: (client_id, client_secret) tuple for HTTP Basic auth
-        service_name: Human-readable service name for error messages
-        send_as_params: If True, send grant_data as query params instead of form body
-
-    Returns:
-        The access token string.
-
-    Raises:
-        httpx.HTTPStatusError: On token endpoint HTTP errors
-        ValueError: If the response is missing access_token
-    """
-    from asibot.distributed_cache import get_cache
-
-    cache = get_cache()
-
-    # Per-key lock: prevents duplicate fetches within the same process
-    async with _s2s_locks_guard:
-        lock = _s2s_token_locks.get(cache_key)
-        if lock is None:
-            lock = asyncio.Lock()
-            _s2s_token_locks[cache_key] = lock
-
-    async with lock:
-        # Check distributed cache
-        cached = await cache.get_s2s_token(cache_key)
-        if cached is not None:
-            token, expires_at = cached
-            if time.time() < expires_at - _TOKEN_MARGIN:
-                return token
-
-        # Fetch fresh token from OAuth endpoint
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            kwargs: dict = {"auth": auth}
-            if send_as_params:
-                kwargs["params"] = grant_data
-            else:
-                kwargs["data"] = grant_data
-            r = await client.post(token_url, **kwargs)
-            r.raise_for_status()
-            data = r.json()
-
-        token = data.get("access_token")
-        if not token:
-            raise ValueError(f"{service_name} OAuth response missing access_token")
-
-        expires_in = data.get("expires_in", 3600)
-        expires_at = time.time() + expires_in
-
-        # Store in distributed cache
-        await cache.put_s2s_token(cache_key, token, expires_at)
-        return token
-
-
-# --- Service Rate Limiting (uses distributed cache) ---
-
-
-async def check_service_rate_limit(
-    service: str,
-    limit: int = 100,
-    window_seconds: int = 60,
-) -> bool:
-    """Check if a service is under its rate limit.
-
-    Args:
-        service: Service name (e.g., "zoom", "paylocity")
-        limit: Max requests per window (default: 100)
-        window_seconds: Sliding window size in seconds (default: 60)
-
-    Returns:
-        True if under limit (request allowed), False if rate-limited.
-    """
-    from asibot.distributed_cache import get_cache
-
-    cache = get_cache()
-    return await cache.check_rate_limit(f"service:{service}", limit, window_seconds)
 
 # --- Schema Versioning ---
 
@@ -224,30 +61,61 @@ class ClientSpec:
     timeout: float = 30.0
 
 
-def build_client(spec: ClientSpec, creds: dict) -> httpx.AsyncClient | None:
-    """Build an httpx.AsyncClient from a spec and credentials dict."""
+def _safe_url_format(template: str, values: dict) -> str:
+    """Substitute {field} placeholders in a URL template safely.
+
+    Unlike str.format(), this only replaces simple {word} tokens and does not
+    support attribute access, indexing, or format specs — preventing format
+    string injection attacks.
+    """
+    def _replace(m: _re.Match) -> str:
+        key = m.group(1)
+        return str(values[key]) if key in values else m.group(0)
+    return _re.sub(r"\{(\w+)\}", _replace, template)
+
+
+async def build_client(spec: ClientSpec, creds: dict) -> http_pool.PooledClient | None:
+    """Build a pooled client from a spec and credentials dict.
+
+    Uses a shared connection pool per service base URL. Per-user auth is
+    injected per-request via PooledClient, so TCP connections are reused
+    across users hitting the same API endpoint.
+    """
     for f in spec.required_fields:
         if not creds.get(f):
             return None
 
-    kwargs: dict = {"timeout": spec.timeout}
-    all_headers: dict[str, str] = dict(spec.headers)
+    # Separate auth headers (per-user) from default headers (shared)
+    auth_headers: dict[str, str] = {}
+    basic_auth: tuple[str, str] | None = None
 
     if spec.auth_type == "bearer":
-        all_headers["Authorization"] = f"Bearer {creds[spec.token_field]}"
+        auth_headers["Authorization"] = f"Bearer {creds[spec.token_field]}"
     elif spec.auth_type == "basic":
         user = creds[spec.basic_user_field] + spec.basic_user_suffix
-        kwargs["auth"] = (user, creds[spec.basic_pass_field])
+        basic_auth = (user, creds[spec.basic_pass_field])
     elif spec.auth_type == "api_key":
-        all_headers[spec.api_key_header] = creds[spec.api_key_field]
+        auth_headers[spec.api_key_header] = creds[spec.api_key_field]
     # "none" — no auth headers (e.g., zoom/paylocity fetch token async)
 
-    if all_headers:
-        kwargs["headers"] = all_headers
+    resolved_url: str | None = None
     if spec.base_url:
-        kwargs["base_url"] = spec.base_url.format(**creds)
+        resolved_url = _safe_url_format(spec.base_url, creds)
+        err = validation.validate_base_url(resolved_url, "base_url")
+        if err:
+            logger.warning("Client build rejected for %s: %s", spec.base_url, err)
+            return None
 
-    return httpx.AsyncClient(**kwargs)
+    base_client = await http_pool.get_base_client(
+        base_url=resolved_url,
+        default_headers=dict(spec.headers) if spec.headers else None,
+        timeout=spec.timeout,
+    )
+    return http_pool.PooledClient(
+        _client=base_client,
+        _auth_headers=auth_headers,
+        _auth=basic_auth,
+    )
 
 
 # Central registry of client specs — connectors no longer need _make_client()
@@ -334,45 +202,172 @@ def format_api_error(service: str, action: str, error: Exception) -> str:
     return f"{service} {action} failed: {error}"
 
 
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_MAX_RETRIES = 3
+_BACKOFF_BASE = 0.5  # seconds
+_MAX_RETRY_AFTER = 60  # cap Retry-After header
+
+
 async def safe_request(
-    client: httpx.AsyncClient,
+    client: Any,
     method: str,
     url: str,
     *,
     service: str,
     action: str,
+    max_retries: int = _MAX_RETRIES,
     **kwargs,
 ) -> tuple[httpx.Response | None, str | None]:
-    """Execute an HTTP request with standardized error handling.
+    """Execute an HTTP request with retries and standardized error handling.
 
-    Checks the global per-service rate limit before making the request.
-    If the global limit is exceeded, returns an error with retry-after guidance.
+    Retries on transient errors (429, 5xx, network errors) with exponential
+    backoff and jitter. Respects Retry-After headers. Does NOT retry on
+    client errors (400, 401, 403, 404).
+
+    Circuit breaker integration: checks before the retry loop and records
+    success/failure based on the final outcome. Only 5xx and network errors
+    count as breaker failures (not 4xx client errors).
 
     Args:
-        client: httpx.AsyncClient to use
+        client: httpx.AsyncClient or PooledClient (anything with .request())
         method: HTTP method ("get", "post", "put", "patch", "delete")
         url: Request URL or path (relative if client has base_url)
         service: Service name for error messages (e.g., "GitHub")
         action: Action name for error messages (e.g., "search repos")
+        max_retries: Maximum retry attempts (default: 3)
         **kwargs: Passed to client.request()
 
     Returns: (response, error_message). If error_message is set, response is None.
     """
-    # Check global per-service rate limit (fail fast before per-user checks)
-    service_key = service.lower().replace(" ", "_")
-    allowed, retry_after = global_rate_limiter.check(service_key)
-    if not allowed:
+    # --- Circuit breaker check (before any attempt) ---
+    breaker = get_breaker(service)
+    if not breaker.can_execute():
+        recovery = breaker.time_until_recovery
         return None, (
-            f"Service rate limit reached for {service}. "
-            f"Retrying automatically. (retry after {retry_after}s)"
+            f"{service} {action} rejected: service circuit breaker is open "
+            f"(retry in {recovery:.0f}s)"
         )
 
-    try:
-        r = await client.request(method, url, **kwargs)
-        r.raise_for_status()
-        return r, None
-    except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
-        return None, format_api_error(service, action, e)
+    last_error: Exception | None = None
+    is_server_or_network_error = False
+
+    for attempt in range(max_retries + 1):
+        try:
+            r = await client.request(method, url, **kwargs)
+            r.raise_for_status()
+            await breaker.record_success()
+            return r, None
+        except httpx.HTTPStatusError as e:
+            last_error = e
+            if e.response.status_code not in _RETRYABLE_STATUS or attempt >= max_retries:
+                # Record breaker failure only for 5xx, not 4xx
+                if e.response.status_code >= 500:
+                    is_server_or_network_error = True
+                break
+            # Respect Retry-After header on 429
+            retry_after = getattr(e.response, "headers", {}).get("Retry-After")
+            if retry_after:
+                try:
+                    delay = min(float(retry_after), _MAX_RETRY_AFTER)
+                except ValueError:
+                    delay = _BACKOFF_BASE * (2 ** attempt)
+            else:
+                delay = _BACKOFF_BASE * (2 ** attempt)
+            delay += random.uniform(0, 0.5)
+            logger.info("%s %s: HTTP %d, retrying in %.1fs (attempt %d/%d)",
+                        service, action, e.response.status_code, delay, attempt + 1, max_retries)
+            await asyncio.sleep(delay)
+        except httpx.RequestError as e:
+            last_error = e
+            is_server_or_network_error = True
+            if attempt >= max_retries:
+                break
+            delay = _BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.5)
+            logger.info("%s %s: network error, retrying in %.1fs (attempt %d/%d)",
+                        service, action, delay, attempt + 1, max_retries)
+            await asyncio.sleep(delay)
+        except ValueError as e:
+            # ValueError is not a server/network error — don't trip the breaker
+            return None, format_api_error(service, action, e)
+
+    # --- Record circuit breaker outcome for final failure ---
+    if is_server_or_network_error:
+        await breaker.record_failure()
+
+    return None, format_api_error(service, action, last_error or Exception("max retries exceeded"))
+
+
+# --- S2S / Client Credentials Token Cache ---
+#
+# TOKEN MANAGEMENT PATTERNS IN ASIBOT:
+# 1. Encrypted file + httpx client cache (Microsoft): microsoft.py
+#    Per-user tokens with refresh flow, cached httpx clients.
+# 2. S2S / client_credentials OAuth (Zoom, Paylocity): get_s2s_token() below
+#    Server-to-server tokens cached in memory with per-key locking.
+# 3. Static credentials (all others): get_credentials() + build_client()
+#    User-provided tokens/keys stored encrypted, no refresh needed.
+
+_MAX_S2S_CACHE = 200
+_s2s_token_cache: OrderedDict[str, tuple[str, float]] = OrderedDict()
+_s2s_token_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
+_s2s_locks_guard = asyncio.Lock()
+_S2S_TOKEN_MARGIN = 300  # refresh 5 min before expiry
+
+
+async def get_s2s_token(
+    *,
+    cache_key: str,
+    token_url: str,
+    grant_data: dict,
+    auth: tuple[str, str],
+    service_name: str,
+    send_as_params: bool = False,
+) -> str:
+    """Fetch and cache an S2S or client_credentials OAuth token.
+
+    Thread-safe with per-cache_key locking. Returns the access token string.
+    Raises ValueError if the response is missing an access_token.
+    Raises httpx.HTTPStatusError on HTTP errors.
+
+    Args:
+        send_as_params: If True, send grant_data as query params instead of form body.
+    """
+    async with _s2s_locks_guard:
+        if cache_key not in _s2s_token_locks:
+            # Evict oldest lock if at capacity
+            while len(_s2s_token_locks) >= _MAX_S2S_CACHE:
+                _s2s_token_locks.popitem(last=False)
+            _s2s_token_locks[cache_key] = asyncio.Lock()
+        else:
+            _s2s_token_locks.move_to_end(cache_key)
+        lock = _s2s_token_locks[cache_key]
+
+    async with lock:
+        cached = _s2s_token_cache.get(cache_key)
+        if cached:
+            token, expires_at = cached
+            if time.time() < expires_at - _S2S_TOKEN_MARGIN:
+                _s2s_token_cache.move_to_end(cache_key)
+                return token
+
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            req_kwargs: dict = {"auth": auth}
+            if send_as_params:
+                req_kwargs["params"] = grant_data
+            else:
+                req_kwargs["data"] = grant_data
+            r = await c.post(token_url, **req_kwargs)
+            r.raise_for_status()
+            data = r.json()
+            token = data.get("access_token")
+            if not token:
+                raise ValueError(f"{service_name} OAuth response missing access_token")
+            expires_in = data.get("expires_in", 3600)
+            # Evict oldest entry if at capacity
+            while len(_s2s_token_cache) >= _MAX_S2S_CACHE:
+                _s2s_token_cache.popitem(last=False)
+            _s2s_token_cache[cache_key] = (token, time.time() + expires_in)
+            return token
 
 
 # --- Credentials ---
@@ -416,12 +411,10 @@ def _apply_defaults(service: str, creds: dict, user_id: str = "") -> dict:
     elif service == "roboflow" and settings.roboflow_workspace:
         defaults["workspace"] = settings.roboflow_workspace
 
-    # Auto-fill email for basic-auth services from the user's SSO profile
+    # Auto-fill email for basic-auth services from the user's SSO profile.
+    # user_id IS the email address (set during SSO), so no DB lookup needed.
     if service in ("atlassian", "confluence", "zendesk") and user_id and "email" not in creds:
-        from asibot import auth
-        user = auth.get_user_by_email(user_id)
-        if user:
-            defaults["email"] = user["user_id"]
+        defaults["email"] = user_id
 
     # User-provided values always win over defaults
     merged = {**defaults, **creds}
@@ -499,10 +492,58 @@ def get_all_prefs(user_id: str) -> dict:
     return _load_prefs(user_id)
 
 
+# --- Per-Service Rate Limiting ---
+
+_SERVICE_RATE_LIMIT = 60  # requests per window
+_SERVICE_RATE_WINDOW = 60  # seconds
+_service_rate: dict[str, deque[float]] = {}  # "user_id:service" -> timestamps
+
+
+def _check_service_rate_limit(user_id: str, service: str) -> str | None:
+    """Check if user has exceeded rate limit for a service.
+
+    Returns error message if rate limited, None if OK.
+    """
+    key = f"{user_id}:{service}"
+    now = time.time()
+    cutoff = now - _SERVICE_RATE_WINDOW
+
+    entries = _service_rate.get(key)
+    if entries is None:
+        _service_rate[key] = deque([now])
+        return None
+
+    # Prune old entries — O(1) per popleft vs O(n) per list.pop(0)
+    while entries and entries[0] < cutoff:
+        entries.popleft()
+
+    # Clean up empty keys to prevent unbounded dict growth
+    if not entries:
+        del _service_rate[key]
+        _service_rate[key] = deque([now])
+        return None
+
+    if len(entries) >= _SERVICE_RATE_LIMIT:
+        return f"Rate limit exceeded for {service}. Max {_SERVICE_RATE_LIMIT} requests per minute. Please wait."
+
+    entries.append(now)
+    return None
+
+
+def cleanup_rate_limits() -> int:
+    """Remove stale rate limit entries. Returns count of removed keys."""
+    now = time.time()
+    cutoff = now - _SERVICE_RATE_WINDOW
+    stale = [k for k, v in _service_rate.items() if not v or v[-1] < cutoff]
+    for k in stale:
+        del _service_rate[k]
+    return len(stale)
+
+
 # --- Permission Enforcement ---
 
 
-def check_permission(ctx, service: str, level: str = "read") -> tuple[str | None, str | None]:
+async def check_permission(ctx, service: str, level: str = "read") -> tuple[str | None, str | None]:
     """Check if user has permission to use a service tool.
 
     Args:
@@ -512,7 +553,7 @@ def check_permission(ctx, service: str, level: str = "read") -> tuple[str | None
 
     Returns: (user_id, error_message). If error_message is set, deny the action.
     """
-    user_id, err = user_session.require_user(ctx)
+    user_id, err = await user_session.require_user(ctx)
     if err:
         return None, err
 
@@ -528,15 +569,19 @@ def check_permission(ctx, service: str, level: str = "read") -> tuple[str | None
     if level == "write" and mode != "readwrite":
         return None, f"{service} is in read-only mode. Say 'set {service} to readwrite' to enable write actions."
 
+    err = _check_service_rate_limit(user_id, service)
+    if err:
+        return None, err
+
     return user_id, None
 
 
-def require_service(
+async def require_service(
     ctx,
     service: str,
-    auth_builder: Callable[[dict], httpx.AsyncClient | None] | None = None,
+    auth_builder: Callable[[dict], http_pool.PooledClient | httpx.AsyncClient | None] | None = None,
     level: str = "read",
-) -> tuple[httpx.AsyncClient | None, str | None, str | None]:
+) -> tuple[http_pool.PooledClient | httpx.AsyncClient | None, str | None, str | None]:
     """Full check: user identity + permissions + credentials + client creation.
 
     Args:
@@ -547,7 +592,7 @@ def require_service(
 
     Returns: (client, user_id, error_message)
     """
-    user_id, err = check_permission(ctx, service, level)
+    user_id, err = await check_permission(ctx, service, level)
     if err:
         return None, None, err
 
@@ -561,7 +606,7 @@ def require_service(
         spec = CLIENT_SPECS.get(service)
         if spec is None:
             return None, None, f"No client configuration registered for {service}."
-        client = build_client(spec, creds)
+        client = await build_client(spec, creds)
 
     if client is None:
         return None, None, f"Incomplete {service} credentials. Say 'connect to {service}' to update."
@@ -645,74 +690,6 @@ def get_required_fields(service: str) -> tuple[list[str], list[str]]:
             labels.append(label_map.get(sf, sf))
 
     return fields, labels
-
-# --- OAuth Token Refresh ---
-
-
-async def refresh_oauth_token(
-    service: str,
-    user_id: str,
-    refresh_url: str,
-    client_id: str,
-    client_secret: str,
-    refresh_token: str,
-) -> dict | None:
-    """Refresh an OAuth access token using a refresh token.
-
-    Posts to the provider's token endpoint with grant_type=refresh_token,
-    updates the user's stored credentials, and returns the new credential dict.
-
-    Returns None if the refresh fails (caller should prompt re-authentication).
-    """
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as http:
-            resp = await http.post(
-                refresh_url,
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        new_creds: dict = {"token": data["access_token"]}
-        # Preserve refresh token (provider may rotate it)
-        new_creds["refresh_token"] = data.get("refresh_token", refresh_token)
-        if data.get("expires_in"):
-            new_creds["expires_at"] = str(time.time() + data["expires_in"])
-
-        # Merge into existing stored credentials (preserve extra fields like org, etc.)
-        existing = get_credentials(user_id, service)
-        existing.update(new_creds)
-        set_credentials(user_id, service, existing)
-        logger.info("%s: refreshed OAuth token for user '%s'", service, user_id)
-        return existing
-    except httpx.HTTPStatusError:
-        logger.warning("%s: OAuth token refresh HTTP error for user '%s'", service, user_id)
-        return None
-    except (httpx.RequestError, KeyError, ValueError) as e:
-        logger.warning("%s: OAuth token refresh failed for user '%s': %s", service, user_id, e)
-        return None
-
-
-def is_token_expired(creds: dict, margin_seconds: int = 300) -> bool:
-    """Check if an OAuth token is expired or will expire within margin_seconds.
-
-    Uses the 'expires_at' field stored as a string timestamp.
-    Returns False if no expires_at is set (assume valid).
-    """
-    expires_at_str = creds.get("expires_at")
-    if not expires_at_str:
-        return False
-    try:
-        expires_at = float(expires_at_str)
-    except (ValueError, TypeError):
-        return False
-    return time.time() > (expires_at - margin_seconds)
-
 
 # Microsoft services (auth handled by microsoft.py, not credentials.json)
 MICROSOFT_SERVICES = ["sharepoint", "outlook", "calendar", "teams"]

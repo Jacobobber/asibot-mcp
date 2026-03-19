@@ -30,9 +30,8 @@ class Connector(ABC):
     async def connect(self) -> None:
         """Establish connection. Raise on failure."""
 
-    @abstractmethod
     async def disconnect(self) -> None:
-        """Clean up resources."""
+        """Clean up resources. Default is a no-op; override if cleanup is needed."""
 
     @abstractmethod
     async def fetch_documents(self) -> list[Document]:

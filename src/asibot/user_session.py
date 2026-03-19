@@ -214,7 +214,7 @@ def get_user_data_dir(user_id: str) -> Path:
     return user_dir
 
 
-def require_user(ctx: Context) -> tuple[str | None, str | None]:
+async def require_user(ctx: Context) -> tuple[str | None, str | None]:
     """Resolve user from API key or session cache.
 
     Checks the in-memory cache first, then falls back to the database.
@@ -247,7 +247,7 @@ def require_user(ctx: Context) -> tuple[str | None, str | None]:
         if _is_rate_limited(key_pfx):
             logger.warning("Auth rate limit exceeded for key prefix %s", key_pfx)
             return None, "Too many failed authentication attempts. Try again in a few minutes."
-        user = auth.get_user_by_key(api_key)
+        user = await auth.get_user_by_key(api_key)
         if user:
             user_id = user["user_id"]
             if session_id:
@@ -258,14 +258,14 @@ def require_user(ctx: Context) -> tuple[str | None, str | None]:
 
     # No API key -- only auto-login single user on stdio transport (local dev)
     if settings.transport == "stdio":
-        users = auth.list_users()
+        users = await auth.list_users()
         if len(users) == 1:
             user_id = users[0]["user_id"]
             if session_id:
                 _cache_session(session_id, user_id)
             return user_id, None
 
-    users = auth.list_users()
+    users = await auth.list_users()
     if len(users) == 0:
         return None, "No users set up yet. Use asibot_setup to create your account."
 

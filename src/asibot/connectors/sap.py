@@ -34,7 +34,7 @@ class SAPConnector(Connector):
                 limit: Max results (default: 25)
             """
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "sap", level="read")
+            client, uid, err = await token_store.require_service(ctx, "sap", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "sap")
@@ -73,7 +73,7 @@ class SAPConnector(Connector):
             err = validation.validate_id(order_id, "order_id")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "sap", level="read")
+            client, uid, err = await token_store.require_service(ctx, "sap", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "sap")
@@ -112,7 +112,7 @@ class SAPConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "sap", level="read")
+            client, uid, err = await token_store.require_service(ctx, "sap", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "sap")
@@ -139,4 +139,118 @@ class SAPConnector(Connector):
                 customer = o.get("SoldToParty", "?")
                 date = o.get("CreationDate", "?")
                 lines.append(f"Order {oid} | Customer: {customer} | Created: {date}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def sap_list_order_items(order_id: str, ctx: Context) -> str:
+            """List line items for a SAP sales order.
+
+            Args:
+                order_id: The sales order number
+            """
+            err = validation.validate_id(order_id, "order_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sap", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sap")
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            safe_order_id = order_id.replace("'", "''")
+            r, err = await token_store.safe_request(
+                client, "GET", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder('{safe_order_id}')/to_Item",
+                service="SAP", action="list order items",
+                params={"$format": "json"},
+            )
+            if err:
+                return err
+            results = r.json().get("d", {}).get("results", [])
+            if not results:
+                return "No line items found for this order."
+            lines = []
+            for item in results:
+                item_num = item.get("SalesOrderItem", "?")
+                material = item.get("Material", "?")
+                quantity = item.get("OrderQuantity", "?")
+                net_amount = item.get("NetAmount", "?")
+                currency = item.get("TransactionCurrency", "")
+                lines.append(f"Item {item_num} | Material: {material} | Qty: {quantity} | Net: {currency} {net_amount}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def sap_get_customer(customer_id: str, ctx: Context) -> str:
+            """Get business partner (customer) details from SAP.
+
+            Args:
+                customer_id: The business partner number
+            """
+            err = validation.validate_id(customer_id, "customer_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sap", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sap")
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            safe_customer_id = customer_id.replace("'", "''")
+            r, err = await token_store.safe_request(
+                client, "GET", f"{base}/sap/opu/odata/sap/API_BUSINESS_PARTNER/A_BusinessPartner('{safe_customer_id}')",
+                service="SAP", action="get customer",
+                params={"$format": "json"},
+            )
+            if err:
+                return err
+            bp = r.json().get("d", r.json())
+            name = bp.get("BusinessPartnerFullName", bp.get("BusinessPartnerName", "?"))
+            category = bp.get("BusinessPartnerCategory", "?")
+            created = bp.get("CreationDate", "?")
+            industry = bp.get("Industry", "?")
+            country = bp.get("Country", "?")
+            return f"Customer: {name}\nID: {customer_id}\nCategory: {category}\nIndustry: {industry}\nCountry: {country}\nCreated: {created}"
+
+        @mcp.tool()
+        async def sap_list_deliveries(order_id: str, ctx: Context) -> str:
+            """List schedule lines (deliveries) for a SAP sales order.
+
+            Args:
+                order_id: The sales order number
+            """
+            err = validation.validate_id(order_id, "order_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sap", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sap")
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            safe_order_id = order_id.replace("'", "''")
+            r, err = await token_store.safe_request(
+                client, "GET", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder('{safe_order_id}')/to_ScheduleLine",
+                service="SAP", action="list deliveries",
+                params={"$format": "json"},
+            )
+            if err:
+                return err
+            results = r.json().get("d", {}).get("results", [])
+            if not results:
+                return "No schedule lines found for this order."
+            lines = []
+            for sl in results:
+                item = sl.get("SalesOrderItem", "?")
+                schedule = sl.get("ScheduleLine", "?")
+                delivery_date = sl.get("ScheduleLineDeliveryDate", sl.get("RequestedDeliveryDate", "?"))
+                quantity = sl.get("OrderQuantity", sl.get("ScheduleLineOrderQuantity", "?"))
+                lines.append(f"Item {item} / Line {schedule} | Delivery: {delivery_date} | Qty: {quantity}")
             return "\n".join(lines)

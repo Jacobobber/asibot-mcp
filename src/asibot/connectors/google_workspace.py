@@ -13,39 +13,6 @@ from asibot.connectors.pagination import collect, paginate_cursor
 logger = logging.getLogger(__name__)
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 CALENDAR_API = "https://www.googleapis.com/calendar/v3"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-
-
-async def _ensure_google_token(user_id: str) -> str | None:
-    """Check if the Google OAuth token is expired and refresh if needed.
-
-    Returns an error message string if the token cannot be refreshed, None if OK.
-    After a successful refresh the stored credentials and the ClientSpec-built
-    client will use the new token on the next require_service() call.
-    """
-    creds = token_store.get_credentials(user_id, "google")
-    if not creds:
-        return None  # no creds — require_service will catch this
-
-    if not token_store.is_token_expired(creds):
-        return None  # token is still valid
-
-    refresh_tok = creds.get("refresh_token")
-    if not refresh_tok:
-        return "Google token expired and no refresh token available. Please reconnect: 'connect to google'."
-
-    from asibot.config import settings
-    result = await token_store.refresh_oauth_token(
-        service="google",
-        user_id=user_id,
-        refresh_url=GOOGLE_TOKEN_URL,
-        client_id=settings.google_client_id,
-        client_secret=settings.google_client_secret,
-        refresh_token=refresh_tok,
-    )
-    if result is None:
-        return "Google token expired. Please reconnect: 'connect to google'."
-    return None
 
 
 class GoogleWorkspaceConnector(Connector):
@@ -75,13 +42,7 @@ class GoogleWorkspaceConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            # Proactive token refresh (before building client)
-            uid, id_err = token_store.check_permission(ctx, "google", "read")
-            if not id_err and uid:
-                refresh_err = await _ensure_google_token(uid)
-                if refresh_err:
-                    return refresh_err
-            client, uid, err = token_store.require_service(ctx, "google", level="read")
+            client, uid, err = await token_store.require_service(ctx, "google", level="read")
             if err:
                 return err
             pages = paginate_cursor(
@@ -117,12 +78,7 @@ class GoogleWorkspaceConnector(Connector):
                 if err:
                     return err
             limit = validation.validate_limit(limit)
-            uid, id_err = token_store.check_permission(ctx, "google", "read")
-            if not id_err and uid:
-                refresh_err = await _ensure_google_token(uid)
-                if refresh_err:
-                    return refresh_err
-            client, uid, err = token_store.require_service(ctx, "google", level="read")
+            client, uid, err = await token_store.require_service(ctx, "google", level="read")
             if err:
                 return err
             pages = paginate_cursor(
@@ -155,12 +111,7 @@ class GoogleWorkspaceConnector(Connector):
             err = validation.validate_id(file_id, "file_id")
             if err:
                 return err
-            uid, id_err = token_store.check_permission(ctx, "google", "read")
-            if not id_err and uid:
-                refresh_err = await _ensure_google_token(uid)
-                if refresh_err:
-                    return refresh_err
-            client, uid, err = token_store.require_service(ctx, "google", level="read")
+            client, uid, err = await token_store.require_service(ctx, "google", level="read")
             if err:
                 return err
             # First get file metadata to determine type
@@ -205,12 +156,7 @@ class GoogleWorkspaceConnector(Connector):
                 days: Number of days to look ahead (default: 7)
                 limit: Max results (default: 20)
             """
-            uid, id_err = token_store.check_permission(ctx, "google", "read")
-            if not id_err and uid:
-                refresh_err = await _ensure_google_token(uid)
-                if refresh_err:
-                    return refresh_err
-            client, uid, err = token_store.require_service(ctx, "google", level="read")
+            client, uid, err = await token_store.require_service(ctx, "google", level="read")
             if err:
                 return err
             from datetime import datetime, timedelta, timezone
@@ -243,3 +189,121 @@ class GoogleWorkspaceConnector(Connector):
                 att_str = f" | {len(attendees)} attendees" if attendees else ""
                 lines.append(f"{e.get('summary', 'No title')}\n  {start} -> {end}{att_str}")
             return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def gdrive_get_file_info(file_id: str, ctx: Context) -> str:
+            """Get detailed metadata for a Google Drive file.
+
+            Args:
+                file_id: The file ID
+            """
+            err = validation.validate_id(file_id, "file_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "google", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{DRIVE_API}/files/{file_id}",
+                service="Google Drive", action="get file info",
+                params={"fields": "id,name,mimeType,modifiedTime,size,owners,shared,webViewLink,createdTime"},
+            )
+            if err:
+                return err
+            f = r.json()
+            owners = ", ".join(o.get("displayName", "?") for o in f.get("owners", []))
+            return (
+                f"{f.get('name', 'Untitled')}\n"
+                f"  ID: {f.get('id', '?')}\n"
+                f"  Type: {f.get('mimeType', '?')}\n"
+                f"  Created: {f.get('createdTime', '?')[:10] if f.get('createdTime') else '?'}\n"
+                f"  Modified: {f.get('modifiedTime', '?')[:10] if f.get('modifiedTime') else '?'}\n"
+                f"  Size: {f.get('size', '?')}\n"
+                f"  Shared: {f.get('shared', '?')}\n"
+                f"  Owners: {owners or '?'}\n"
+                f"  Link: {f.get('webViewLink', '?')}"
+            )
+
+        @mcp.tool()
+        async def gcalendar_get_event(event_id: str, ctx: Context) -> str:
+            """Get details of a Google Calendar event.
+
+            Args:
+                event_id: The event ID
+            """
+            err = validation.validate_id(event_id, "event_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "google", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{CALENDAR_API}/calendars/primary/events/{event_id}",
+                service="Google Calendar", action="get event",
+            )
+            if err:
+                return err
+            e = r.json()
+            start_obj = e.get("start", {})
+            start = start_obj.get("dateTime", start_obj.get("date", "?"))
+            end_obj = e.get("end", {})
+            end = end_obj.get("dateTime", end_obj.get("date", "?"))
+            attendees = e.get("attendees", [])
+            att_list = ", ".join(a.get("email", "?") for a in attendees[:10])
+            organizer = e.get("organizer", {}).get("email", "?")
+            return (
+                f"{e.get('summary', 'No title')}\n"
+                f"  Start: {start}\n"
+                f"  End: {end}\n"
+                f"  Location: {e.get('location', 'None')}\n"
+                f"  Organizer: {organizer}\n"
+                f"  Description: {e.get('description', 'None')}\n"
+                f"  Attendees ({len(attendees)}): {att_list or 'None'}"
+            )
+
+        @mcp.tool()
+        async def gcalendar_create_event(summary: str, start: str, end: str, ctx: Context, description: str = "", attendees: str = "") -> str:
+            """Create a Google Calendar event.
+
+            Args:
+                summary: Event title
+                start: Start time (ISO 8601 dateTime)
+                end: End time (ISO 8601 dateTime)
+                description: Event description (optional)
+                attendees: Comma-separated email addresses (optional)
+            """
+            err = validation.validate_content(summary, "summary")
+            if err:
+                return err
+            err = validation.validate_content(start, "start")
+            if err:
+                return err
+            err = validation.validate_content(end, "end")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "google", level="write")
+            if err:
+                return err
+            event_body = {
+                "summary": summary,
+                "start": {"dateTime": start},
+                "end": {"dateTime": end},
+            }
+            if description:
+                event_body["description"] = description
+            if attendees:
+                emails = [e.strip() for e in attendees.split(",") if e.strip()]
+                for email in emails:
+                    email_err = validation.validate_email_address(email)
+                    if email_err:
+                        return email_err
+                event_body["attendees"] = [{"email": e} for e in emails]
+            r, err = await token_store.safe_request(
+                client, "POST", f"{CALENDAR_API}/calendars/primary/events",
+                service="Google Calendar", action="create event",
+                json=event_body,
+            )
+            if err:
+                return err
+            data = r.json()
+            return f"Event created. ID: {data.get('id', '?')} | Link: {data.get('htmlLink', '?')}"

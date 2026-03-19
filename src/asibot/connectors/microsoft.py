@@ -7,6 +7,7 @@ Used by: sharepoint, outlook, teams connectors.
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 
 import httpx
 
@@ -18,44 +19,65 @@ logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
-# Read-only MS365 scopes (List 1)
+# MS365 scopes
 SCOPES = (
     "User.Read "
     "GroupMember.Read.All "  # Azure AD group membership for role sync
     "Sites.Read.All "
     "Files.Read.All "
     "Mail.Read "
-    "Calendars.Read "
+    "Mail.Send "
+    "Calendars.ReadWrite "
     "Team.ReadBasic.All "
+    "TeamMember.Read.All "
     "ChannelMessage.Read.All "
+    "ChannelMessage.Send "
     "Chat.Read "
     "Notes.Read.All "
     "Tasks.Read "
     "offline_access"
 )
 
-_user_clients: dict[str, httpx.AsyncClient] = {}
+_MAX_CLIENTS = 1500  # 50% headroom over 1000 target users
+_CLIENT_IDLE_TIMEOUT = 1800  # 30 minutes
+_user_clients: OrderedDict[str, tuple[httpx.AsyncClient, float]] = OrderedDict()
 _client_lock = asyncio.Lock()
 
 
 async def close_all_clients() -> None:
     """Close all cached HTTP clients. Call on server shutdown."""
-    for uid, client in list(_user_clients.items()):
-        try:
-            await client.aclose()
-        except Exception:
-            logger.warning("Failed to close client for user '%s'", uid)
-    _user_clients.clear()
+    async with _client_lock:
+        for uid, (client, _) in list(_user_clients.items()):
+            try:
+                await client.aclose()
+            except Exception:
+                logger.warning("Failed to close client for user '%s'", uid)
+        _user_clients.clear()
 
 
 async def close_client(user_id: str) -> None:
     """Close and remove the cached client for a specific user."""
-    client = _user_clients.pop(user_id, None)
-    if client:
+    entry = _user_clients.pop(user_id, None)
+    if entry:
         try:
-            await client.aclose()
+            await entry[0].aclose()
         except Exception:
             logger.warning("Failed to close client for user '%s'", user_id)
+
+
+async def cleanup_idle_clients() -> None:
+    """Close clients not used recently. Called periodically."""
+    cutoff = time.time() - _CLIENT_IDLE_TIMEOUT
+    async with _client_lock:
+        to_evict = [uid for uid, (_, ts) in _user_clients.items() if ts < cutoff]
+        for uid in to_evict:
+            client, _ = _user_clients.pop(uid)
+            try:
+                await client.aclose()
+            except Exception:
+                logger.debug("Failed to close idle client for '%s'", uid)
+        if to_evict:
+            logger.info("Microsoft: closed %d idle clients", len(to_evict))
 
 
 def token_path(user_id: str):
@@ -104,13 +126,22 @@ async def refresh_token(user_id: str, token_data: dict) -> bool:
         save_token(user_id, new_token)
         logger.info("Microsoft: refreshed token for user '%s'", user_id)
         # Update cached client only after successful save
-        if user_id in _user_clients:
-            _user_clients[user_id].headers["Authorization"] = f"Bearer {new_token['access_token']}"
+        async with _client_lock:
+            if user_id in _user_clients:
+                client, _ = _user_clients[user_id]
+                client.headers["Authorization"] = f"Bearer {new_token['access_token']}"
+                _user_clients[user_id] = (client, time.time())
+                _user_clients.move_to_end(user_id)
         return True
     except httpx.HTTPStatusError:
         logger.exception("Microsoft: token refresh HTTP error for user '%s'", user_id)
-        # Invalidate cached client on auth failure
-        _user_clients.pop(user_id, None)
+        async with _client_lock:
+            entry = _user_clients.pop(user_id, None)
+        if entry:
+            try:
+                await entry[0].aclose()
+            except Exception:
+                pass
         return False
     except (httpx.RequestError, KeyError, ValueError):
         logger.exception("Microsoft: token refresh failed for user '%s'", user_id)
@@ -134,8 +165,15 @@ async def get_client(user_id: str) -> httpx.AsyncClient | None:
         return None
 
     async with _client_lock:
-        client = _user_clients.get(user_id)
-        if client is None:
+        entry = _user_clients.get(user_id)
+        if entry is None:
+            # Evict oldest if at capacity
+            while len(_user_clients) >= _MAX_CLIENTS:
+                evict_uid, (evict_client, _) = _user_clients.popitem(last=False)
+                try:
+                    await evict_client.aclose()
+                except Exception:
+                    logger.debug("Failed to close evicted client for '%s'", evict_uid)
             client = httpx.AsyncClient(
                 headers={
                     "Authorization": f"Bearer {token_data['access_token']}",
@@ -143,9 +181,12 @@ async def get_client(user_id: str) -> httpx.AsyncClient | None:
                 },
                 timeout=30.0,
             )
-            _user_clients[user_id] = client
+            _user_clients[user_id] = (client, time.time())
         else:
+            client, _ = entry
             client.headers["Authorization"] = f"Bearer {token_data['access_token']}"
+            _user_clients[user_id] = (client, time.time())
+            _user_clients.move_to_end(user_id)
         return client
 
 
@@ -161,7 +202,7 @@ async def require_graph_client(ctx, service: str = "sharepoint", level: str = "r
     """
     from asibot import token_store
 
-    uid, err = token_store.check_permission(ctx, service, level)
+    uid, err = await token_store.check_permission(ctx, service, level)
     if err:
         return None, None, err
     if not await ensure_auth(uid):

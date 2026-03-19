@@ -34,7 +34,7 @@ class ConcurConnector(Connector):
             Args:
                 limit: Max results (default: 25)
             """
-            client, uid, err = token_store.require_service(ctx, "concur", level="read")
+            client, uid, err = await token_store.require_service(ctx, "concur", level="read")
             if err:
                 return err
             pages = paginate_odata(
@@ -67,7 +67,7 @@ class ConcurConnector(Connector):
             err = validation.validate_id(report_id, "report_id")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "concur", level="read")
+            client, uid, err = await token_store.require_service(ctx, "concur", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "GET", f"{API}/expense/reports/{report_id}", service="Concur", action="get report")
@@ -89,3 +89,87 @@ class ConcurConnector(Connector):
                     amount = e.get("TransactionAmount", "?")
                     output += f"\n  {desc} | {currency} {amount}"
             return output
+
+        @mcp.tool()
+        async def concur_list_expenses(report_id: str, ctx: Context, limit: int = 25) -> str:
+            """List expense entries for a specific report from SAP Concur.
+
+            Args:
+                report_id: The expense report ID
+                limit: Max results (default: 25)
+            """
+            err = validation.validate_id(report_id, "report_id")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "concur", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/expense/entries", service="Concur", action="list expenses", params={"reportID": report_id, "limit": limit})
+            if err:
+                return err
+            items = r.json().get("Items", [])
+            if not items:
+                return "No expense entries found for this report."
+            lines = []
+            for e in items:
+                desc = e.get("Description", e.get("ExpenseTypeName", "No description"))
+                amount = e.get("TransactionAmount", "?")
+                currency = e.get("TransactionCurrencyCode", "")
+                date = e.get("TransactionDate", "?")[:10] if e.get("TransactionDate") else "?"
+                eid = e.get("ID", "?")
+                lines.append(f"{desc} (ID: {eid}) | {currency} {amount} | Date: {date}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def concur_get_expense(expense_id: str, ctx: Context) -> str:
+            """Get details of a specific expense entry from SAP Concur.
+
+            Args:
+                expense_id: The expense entry ID
+            """
+            err = validation.validate_id(expense_id, "expense_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "concur", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/expense/entries/{expense_id}", service="Concur", action="get expense")
+            if err:
+                return err
+            e = r.json()
+            desc = e.get("Description", e.get("ExpenseTypeName", "No description"))
+            amount = e.get("TransactionAmount", "?")
+            currency = e.get("TransactionCurrencyCode", "")
+            date = e.get("TransactionDate", "?")[:10] if e.get("TransactionDate") else "?"
+            vendor = e.get("VendorDescription", "?")
+            category = e.get("ExpenseTypeName", "?")
+            report_id = e.get("ReportID", "?")
+            return f"{desc}\nID: {expense_id}\nAmount: {currency} {amount}\nDate: {date}\nVendor: {vendor}\nCategory: {category}\nReport: {report_id}"
+
+        @mcp.tool()
+        async def concur_list_approvals(ctx: Context, limit: int = 25) -> str:
+            """List expense reports pending approval from SAP Concur.
+
+            Args:
+                limit: Max results (default: 25)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "concur", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/expense/reports", service="Concur", action="list approvals", params={"approvalStatusCode": "A_PEND", "limit": limit})
+            if err:
+                return err
+            items = r.json().get("Items", [])
+            if not items:
+                return "No reports pending approval."
+            lines = []
+            for rpt in items:
+                name = rpt.get("Name", "Untitled")
+                rid = rpt.get("ID", "?")
+                owner = rpt.get("OwnerName", "?")
+                total = rpt.get("Total", "?")
+                currency = rpt.get("CurrencyCode", "")
+                lines.append(f"{name} (ID: {rid}) | Owner: {owner} | Total: {currency} {total}")
+            return "\n".join(lines)

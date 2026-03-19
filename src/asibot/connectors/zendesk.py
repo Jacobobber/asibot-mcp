@@ -10,6 +10,8 @@ from asibot.connectors.pagination import collect, paginate_odata
 
 logger = logging.getLogger(__name__)
 
+_ZENDESK_PRIORITIES = frozenset({"low", "normal", "high", "urgent"})
+
 
 class ZendeskConnector(Connector):
     def __init__(self, config=None):
@@ -39,7 +41,7 @@ class ZendeskConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "zendesk", level="read")
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="read")
             if err:
                 return err
             q = f"type:ticket {query}"
@@ -71,7 +73,7 @@ class ZendeskConnector(Connector):
             Args:
                 ticket_id: Ticket ID
             """
-            client, uid, err = token_store.require_service(ctx, "zendesk", level="read")
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(
@@ -114,7 +116,7 @@ class ZendeskConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "zendesk", level="read")
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="read")
             if err:
                 return err
             pages = paginate_odata(
@@ -135,3 +137,128 @@ class ZendeskConnector(Connector):
                     f"  Snippet: {a.get('snippet', '?')[:150]}"
                 )
             return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def zendesk_list_users(ctx: Context, query: str = "", limit: int = 10) -> str:
+            """List or search Zendesk users.
+
+            Args:
+                query: Search query (optional, lists all if empty)
+                limit: Max results (default: 10)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="read")
+            if err:
+                return err
+            if query:
+                err = validation.validate_query(query, "query")
+                if err:
+                    return err
+                r, err = await token_store.safe_request(
+                    client, "GET", "/users/search.json",
+                    service="Zendesk", action="search users",
+                    params={"query": query},
+                )
+            else:
+                r, err = await token_store.safe_request(
+                    client, "GET", "/users.json",
+                    service="Zendesk", action="list users",
+                    params={"per_page": limit},
+                )
+            if err:
+                return err
+            users = r.json().get("users", [])
+            if not users:
+                return "No users found."
+            lines = []
+            for u in users:
+                lines.append(
+                    f"{u.get('name', '?')} ({u.get('email', '?')})\n"
+                    f"  Role: {u.get('role', '?')} | Active: {u.get('active', '?')} | ID: {u.get('id', '?')}"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def zendesk_get_user(user_id: str, ctx: Context) -> str:
+            """Get details of a Zendesk user.
+
+            Args:
+                user_id: User ID
+            """
+            err = validation.validate_id(user_id, "user_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"/users/{user_id}.json",
+                service="Zendesk", action="get user",
+            )
+            if err:
+                return err
+            u = r.json().get("user", {})
+            return (
+                f"{u.get('name', '?')}\n"
+                f"  Email: {u.get('email', '?')}\n"
+                f"  Role: {u.get('role', '?')}\n"
+                f"  Active: {u.get('active', '?')}\n"
+                f"  ID: {u.get('id', '?')}"
+            )
+
+        @mcp.tool()
+        async def zendesk_create_ticket(subject: str, description: str, ctx: Context, priority: str = "normal") -> str:
+            """Create a new Zendesk ticket.
+
+            Args:
+                subject: Ticket subject
+                description: Ticket description
+                priority: Priority (low, normal, high, urgent). Default: normal
+            """
+            err = validation.validate_content(subject, "subject")
+            if err:
+                return err
+            err = validation.validate_content(description, "description")
+            if err:
+                return err
+            if priority not in _ZENDESK_PRIORITIES:
+                return f"Invalid priority: '{priority}'. Allowed: {', '.join(sorted(_ZENDESK_PRIORITIES))}"
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", "/tickets.json",
+                service="Zendesk", action="create ticket",
+                json={"ticket": {"subject": subject, "comment": {"body": description}, "priority": priority}},
+            )
+            if err:
+                return err
+            ticket = r.json().get("ticket", {})
+            return f"Ticket created. ID: #{ticket.get('id', '?')} | Subject: {ticket.get('subject', '?')}"
+
+        @mcp.tool()
+        async def zendesk_add_comment(ticket_id: str, comment: str, ctx: Context, public: bool = True) -> str:
+            """Add a comment to a Zendesk ticket.
+
+            Args:
+                ticket_id: Ticket ID
+                comment: Comment body text
+                public: Whether the comment is public (default: True)
+            """
+            err = validation.validate_id(ticket_id, "ticket_id")
+            if err:
+                return err
+            err = validation.validate_content(comment, "comment")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/tickets/{ticket_id}.json",
+                service="Zendesk", action="add comment",
+                json={"ticket": {"comment": {"body": comment, "public": public}}},
+            )
+            if err:
+                return err
+            return f"Comment added to ticket #{ticket_id}."

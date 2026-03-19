@@ -34,7 +34,7 @@ class AdobeSignConnector(Connector):
             Args:
                 limit: Max results (default: 20)
             """
-            client, uid, err = token_store.require_service(ctx, "adobe_sign", level="read")
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="read")
             if err:
                 return err
             pages = paginate_cursor(
@@ -66,7 +66,7 @@ class AdobeSignConnector(Connector):
             err = validation.validate_id(agreement_id, "agreement_id")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "adobe_sign", level="read")
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "GET", f"{API}/agreements/{agreement_id}", service="Adobe Sign", action="get agreement")
@@ -86,3 +86,107 @@ class AdobeSignConnector(Connector):
                 f"Message: {a.get('message', 'None')}\n"
                 f"Participants: {part_str}"
             )
+
+        @mcp.tool()
+        async def adobe_sign_get_signing_urls(agreement_id: str, ctx: Context) -> str:
+            """Get signing URLs for an Adobe Sign agreement.
+
+            Args:
+                agreement_id: The agreement ID
+            """
+            err = validation.validate_id(agreement_id, "agreement_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/agreements/{agreement_id}/signingUrls", service="Adobe Sign", action="get signing URLs")
+            if err:
+                return err
+            data = r.json()
+            signing_url_sets = data.get("signingUrlSetInfos", [])
+            if not signing_url_sets:
+                return "No signing URLs available for this agreement."
+            lines = []
+            for url_set in signing_url_sets:
+                for url_info in url_set.get("signingUrls", []):
+                    email = url_info.get("email", "?")
+                    url = url_info.get("esignUrl", "?")
+                    lines.append(f"{email}: {url}")
+            return "\n".join(lines) if lines else "No signing URLs available for this agreement."
+
+        @mcp.tool()
+        async def adobe_sign_get_audit_trail(agreement_id: str, ctx: Context) -> str:
+            """Get the audit trail for an Adobe Sign agreement.
+
+            Args:
+                agreement_id: The agreement ID
+            """
+            err = validation.validate_id(agreement_id, "agreement_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/agreements/{agreement_id}/auditTrail", service="Adobe Sign", action="get audit trail")
+            if err:
+                return err
+            data = r.json()
+            events = data.get("events", [])
+            if not events:
+                return "No audit trail events found."
+            lines = []
+            for event in events:
+                date = event.get("date", "?")
+                description = event.get("description", "?")
+                acting_user = event.get("actingUserEmail", event.get("participantEmail", "?"))
+                event_type = event.get("type", "?")
+                lines.append(f"{date} | {event_type} | {acting_user} | {description}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def adobe_sign_list_templates(ctx: Context, limit: int = 20) -> str:
+            """List library document templates from Adobe Sign.
+
+            Args:
+                limit: Max results (default: 20)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/libraryDocuments", service="Adobe Sign", action="list templates", params={"pageSize": limit})
+            if err:
+                return err
+            templates = r.json().get("libraryDocumentList", [])
+            if not templates:
+                return "No templates found."
+            lines = []
+            for t in templates:
+                name = t.get("name", "Untitled")
+                tid = t.get("id", "?")
+                modified = (t.get("modifiedDate") or "?")[:10]
+                lines.append(f"{name} (ID: {tid}) | Modified: {modified}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def adobe_sign_get_form_data(agreement_id: str, ctx: Context) -> str:
+            """Get form field data from a completed Adobe Sign agreement.
+
+            Args:
+                agreement_id: The agreement ID
+            """
+            err = validation.validate_id(agreement_id, "agreement_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/agreements/{agreement_id}/formData", service="Adobe Sign", action="get form data")
+            if err:
+                return err
+            # formData endpoint returns CSV text
+            text = r.text if hasattr(r, "text") and r.text else r.json() if callable(getattr(r, "json", None)) else str(r)
+            if not text or text == "{}":
+                return "No form data available for this agreement."
+            return f"Form data for agreement {agreement_id}:\n{text}"

@@ -49,7 +49,7 @@ class ShareFileConnector(Connector):
                 if err:
                     return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "sharefile", level="read")
+            client, uid, err = await token_store.require_service(ctx, "sharefile", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "sharefile")
@@ -86,7 +86,7 @@ class ShareFileConnector(Connector):
             if err:
                 return err
             limit = validation.validate_limit(limit)
-            client, uid, err = token_store.require_service(ctx, "sharefile", level="read")
+            client, uid, err = await token_store.require_service(ctx, "sharefile", level="read")
             if err:
                 return err
             creds = token_store.get_credentials(uid, "sharefile")
@@ -108,4 +108,93 @@ class ShareFileConnector(Connector):
                 parent = item.get("ParentName", "?")
                 size = item.get("FileSizeBytes", 0)
                 lines.append(f"{name} | In: {parent} | {size} bytes")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def sharefile_get_item(item_id: str, ctx: Context) -> str:
+            """Get details of a specific ShareFile item (file or folder).
+
+            Args:
+                item_id: The item ID
+            """
+            err = validation.validate_id(item_id, "item_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sharefile", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sharefile")
+            try:
+                base = _api(creds)
+            except ValueError as e:
+                return str(e)
+            r, err = await token_store.safe_request(client, "GET", f"{base}/Items({item_id})", service="ShareFile", action="get item")
+            if err:
+                return err
+            item = r.json()
+            name = item.get("FileName", item.get("Name", "?"))
+            itype = "Folder" if item.get("odata.type", "").endswith("Folder") else "File"
+            size = item.get("FileSizeBytes", 0)
+            created = item.get("CreationDate", "?")[:10] if item.get("CreationDate") else "?"
+            creator = item.get("CreatorNameShort", item.get("CreatedBy", "?"))
+            parent = item.get("ParentName", "?")
+            return f"{name}\nType: {itype}\nSize: {size} bytes\nCreated: {created}\nCreator: {creator}\nParent: {parent}"
+
+        @mcp.tool()
+        async def sharefile_download_text(item_id: str, ctx: Context) -> str:
+            """Download and return the text content of a ShareFile item. Only works for text files under 1MB.
+
+            Args:
+                item_id: The item ID
+            """
+            err = validation.validate_id(item_id, "item_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sharefile", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sharefile")
+            try:
+                base = _api(creds)
+            except ValueError as e:
+                return str(e)
+            r, err = await token_store.safe_request(client, "GET", f"{base}/Items({item_id})/Download", service="ShareFile", action="download text")
+            if err:
+                return err
+            content_type = r.headers.get("Content-Type", "") if hasattr(r, "headers") else ""
+            if content_type and "text" not in content_type and "json" not in content_type and "xml" not in content_type:
+                return f"Cannot display binary file (Content-Type: {content_type}). Only text files are supported."
+            text = r.text if hasattr(r, "text") else str(r.content if hasattr(r, "content") else r)
+            if len(text) > 1_048_576:
+                return "File is too large to display (exceeds 1MB limit)."
+            return text
+
+        @mcp.tool()
+        async def sharefile_list_shared(ctx: Context, limit: int = 25) -> str:
+            """List shared items/links from ShareFile.
+
+            Args:
+                limit: Max results (default: 25)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "sharefile", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sharefile")
+            try:
+                base = _api(creds)
+            except ValueError as e:
+                return str(e)
+            r, err = await token_store.safe_request(client, "GET", f"{base}/Shares", service="ShareFile", action="list shared", params={"$top": limit})
+            if err:
+                return err
+            shares = r.json().get("value", [])
+            if not shares:
+                return "No shared items found."
+            lines = []
+            for s in shares:
+                name = s.get("FileName", s.get("Name", s.get("Title", "?")))
+                share_id = s.get("Id", s.get("id", "?"))
+                created = s.get("CreationDate", "?")[:10] if s.get("CreationDate") else "?"
+                lines.append(f"{name} (ID: {share_id}) | Created: {created}")
             return "\n".join(lines)

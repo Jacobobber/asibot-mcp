@@ -1,5 +1,6 @@
 """Smartsheet connector: sheets and search via Smartsheet REST API."""
 
+import json
 import logging
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -34,7 +35,7 @@ class SmartsheetConnector(Connector):
             Args:
                 limit: Max results (default: 50)
             """
-            client, uid, err = token_store.require_service(ctx, "smartsheet", level="read")
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="read")
             if err:
                 return err
             pages = paginate_offset(
@@ -67,7 +68,7 @@ class SmartsheetConnector(Connector):
             err = validation.validate_id(sheet_id, "sheet_id")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "smartsheet", level="read")
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "GET", f"{API}/sheets/{sheet_id}", service="Smartsheet", action="get sheet")
@@ -100,7 +101,7 @@ class SmartsheetConnector(Connector):
             err = validation.validate_query(query, "query")
             if err:
                 return err
-            client, uid, err = token_store.require_service(ctx, "smartsheet", level="read")
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="read")
             if err:
                 return err
             r, err = await token_store.safe_request(client, "GET", f"{API}/search", service="Smartsheet", action="search", params={"query": query})
@@ -120,3 +121,92 @@ class SmartsheetConnector(Connector):
                     for cd in context_data[:3]:
                         lines.append(f"    {cd}")
             return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def smartsheet_get_row(sheet_id: str, row_id: str, ctx: Context) -> str:
+            """Get a specific row from a Smartsheet sheet.
+
+            Args:
+                sheet_id: The sheet ID
+                row_id: The row ID
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            err = validation.validate_id(row_id, "row_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/sheets/{sheet_id}/rows/{row_id}", service="Smartsheet", action="get row")
+            if err:
+                return err
+            row = r.json()
+            cells = row.get("cells", [])
+            if not cells:
+                return f"Row {row_id}: no cells found."
+            lines = [f"Row ID: {row.get('id', '?')} | Row Number: {row.get('rowNumber', '?')}"]
+            for cell in cells:
+                col_id = cell.get("columnId", "?")
+                value = cell.get("displayValue", cell.get("value", ""))
+                lines.append(f"  Column {col_id}: {value}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def smartsheet_list_columns(sheet_id: str, ctx: Context) -> str:
+            """List columns of a Smartsheet sheet.
+
+            Args:
+                sheet_id: The sheet ID
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/sheets/{sheet_id}/columns", service="Smartsheet", action="list columns")
+            if err:
+                return err
+            columns = r.json().get("data", [])
+            if not columns:
+                return "No columns found."
+            lines = []
+            for c in columns:
+                lines.append(f"{c.get('title', '?')} (type: {c.get('type', '?')}, ID: {c.get('id', '?')})")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def smartsheet_add_row(sheet_id: str, ctx: Context, cells_json: str = "") -> str:
+            """Add a row to a Smartsheet sheet.
+
+            Args:
+                sheet_id: The sheet ID
+                cells_json: JSON string of cells array, e.g. [{"columnId": 123, "value": "text"}]
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            err = validation.validate_content(cells_json, "cells_json")
+            if err:
+                return err
+            try:
+                cells = json.loads(cells_json)
+            except (json.JSONDecodeError, TypeError):
+                return "Invalid cells_json: must be valid JSON."
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/sheets/{sheet_id}/rows",
+                service="Smartsheet", action="add row",
+                json=[{"toBottom": True, "cells": cells}],
+            )
+            if err:
+                return err
+            data = r.json()
+            result_rows = data.get("result", [])
+            if result_rows:
+                return f"Row added. ID: {result_rows[0].get('id', '?')}"
+            return "Row added."
