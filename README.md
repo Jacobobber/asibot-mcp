@@ -319,6 +319,7 @@ curl https://your-server/health
 
 ## Reference
 
+- **Adding Connectors**: [`docs/adding-connectors.md`](docs/adding-connectors.md) — how to connect a new API (internal tools, third-party services)
 - **Configuration**: [`docs/configuration.md`](docs/configuration.md) — all environment variables with defaults and descriptions
 - **Runbook**: [`deploy/runbook.md`](deploy/runbook.md) — health checks, alert triage, scaling, incident response
 - **Backup & Restore**: [`deploy/backup-restore.md`](deploy/backup-restore.md) — PostgreSQL dumps, master key backup, restore procedures
