@@ -22,7 +22,7 @@ Claude walks you through Microsoft SSO sign-in. After that, just talk:
 
 **Work across platforms without switching tabs.** Ask Claude to pull context from multiple tools in one conversation — find a Jira ticket, check the related GitHub PR, look up the customer in Salesforce, and draft a summary email in Outlook.
 
-**Read and write everywhere.** Search SharePoint files, read email threads, create Jira issues, update Salesforce records, send Teams messages, add Notion pages, run Zapier actions — 150+ operations across 26 services.
+**Read and write everywhere.** Search SharePoint files, send emails, merge GitHub PRs, update Jira issues, schedule Zoom meetings, create Salesforce records, reply in Teams threads, send agreements for signature — 300+ operations across 26 services.
 
 **Stay in control.** Every connection is per-user with individual credentials. Set services to read-only or read-write. Disconnect anytime. Admins control who can access what.
 
@@ -31,7 +31,7 @@ Claude walks you through Microsoft SSO sign-in. After that, just talk:
 | Category | Services |
 |----------|----------|
 | **Microsoft 365** | SharePoint, Outlook, Teams, Calendar |
-| **Google Workspace** | Drive, Calendar |
+| **Google Workspace** | Gmail, Drive, Sheets, Calendar |
 | **Dev & Engineering** | GitHub, Jira, Confluence |
 | **CRM & Sales** | Salesforce, HubSpot |
 | **Support** | Zendesk |
@@ -42,55 +42,138 @@ Claude walks you through Microsoft SSO sign-in. After that, just talk:
 | **Automation & ML** | Zapier, Roboflow |
 
 <details>
-<summary><strong>Full connector capabilities</strong></summary>
+<summary><strong>Full connector capabilities (302 tools)</strong></summary>
 
-**Microsoft 365** — Sign in once to unlock all four:
-- **SharePoint**: Search files, browse folders, read documents (Word, PDF, Excel, CSV, Markdown), list sites, view version history
-- **Outlook**: Search email, read threads, send emails, browse folders, view attachments
-- **Teams**: List teams/channels, read conversations, search messages, send messages, list members
-- **Calendar**: View events, create events with attendees
+<details>
+<summary><strong>Microsoft 365</strong> — Sign in once to unlock all four (45 tools)</summary>
 
-**Google Workspace**
-- **Drive**: Search files, browse folders, read documents (Docs, Sheets, text, PDF)
-- **Calendar**: View events, create events
+- **SharePoint**: Search files, browse folders, read documents (Word, PDF, Excel, CSV, Markdown), list sites, view version history, upload files, create folders, move/copy/delete items, manage lists and list items, create sharing links
+- **Outlook**: Search email, read threads, send/reply/forward emails, move/delete/archive messages, mark read/unread, browse folders, view attachments, manage contacts, create/update/delete calendar events
+- **Teams**: List teams/channels, read conversations, search messages, send messages, reply in threads, create/delete channels, send chat messages, list channel files, list members
+</details>
 
-**GitHub** — Search repos/code, browse issues/PRs, create issues, view diffs, check CI status, list releases/branches
+<details>
+<summary><strong>Google Workspace</strong> — Gmail, Drive, Sheets, Calendar (17 tools)</summary>
 
-**Jira** — Search with JQL, view issues with comments, create issues, add comments, list sprints, move issues between statuses
+- **Gmail**: Search emails, read full messages, send email, reply to threads
+- **Drive**: Search files, browse folders, read documents (Docs, Sheets, text, PDF), create folders, upload/delete files, share with users
+- **Sheets**: Read spreadsheet ranges, update cells
+- **Calendar**: View events, get details, create events with attendees
+</details>
 
-**Confluence** — Search pages, read content, list spaces, view history, create pages
+<details>
+<summary><strong>GitHub</strong> — Full repo, issue, and PR management (23 tools)</summary>
 
-**Salesforce** — Search records, run SOQL, describe objects, create/update records
+Search repos/code, browse issues and PRs, create/update/close issues, manage labels and assignees, add comments, submit PR reviews (approve/request changes), merge PRs (merge/squash/rebase), list changed files and reviews, read file content, list commits/releases/branches/tags, view GitHub Actions runs
+</details>
 
-**HubSpot** — Search contacts/deals/companies, view profiles and pipelines, create contacts and deals
+<details>
+<summary><strong>Jira</strong> — Issue tracking and sprint management (14 tools)</summary>
 
-**Zendesk** — Search tickets, read threads, search Help Center, create tickets, add comments
+Search with JQL, view issues with comments, create issues and subtasks, update issue fields, add/remove labels, assign issues, link issues, add comments, list sprints and boards, get sprint issues, move issues between statuses via transitions
+</details>
 
-**Notion** — Search pages/databases, query with filters, create pages, update properties, add database entries
+<details>
+<summary><strong>Confluence</strong> — Wiki pages and knowledge base (14 tools)</summary>
 
-**Figma** — List projects/files, view structure, read comments, list components and styles
+Search pages, read content, list spaces, view page history, create and update pages, add/remove labels, add comments, delete pages, move pages between parents, upload attachments, list attachments
+</details>
 
-**Smartsheet** — List sheets, read data, search, add rows
+<details>
+<summary><strong>Salesforce</strong> — CRM records and reporting (11 tools)</summary>
 
-**Zoom** — List meetings, view details, browse recordings, get transcripts
+Search records (SOSL), run SOQL queries, describe object metadata, create/update/delete records, list available objects, list and run reports, view recently accessed records
+</details>
 
-**Adobe Sign** — List agreements, view status, get signing URLs, view audit trail
+<details>
+<summary><strong>HubSpot</strong> — Contacts, deals, and pipeline management (20 tools)</summary>
 
-**SAP** — List/search sales orders, view details, look up customers
+Search and manage contacts/deals/companies (create, update, delete), view profiles and pipelines, create/list associations between records, create notes and tasks, view activity history
+</details>
 
-**SAP Concur** — List expense reports, view details with line items, view pending approvals
+<details>
+<summary><strong>Zendesk</strong> — Ticket management and Help Center (15 tools)</summary>
 
-**Citrix ShareFile** — Browse files, search documents, list shared links
+Search tickets, read threads with comments, create tickets, update ticket fields (status, priority, assignee), close tickets, add/remove tags, assign to agents/groups, add comments, search Help Center articles, list views and groups, get tickets from saved views
+</details>
 
-**LinkSquares** — List contracts, search, view AI-extracted values, list amendments
+<details>
+<summary><strong>Notion</strong> — Pages, databases, and collaboration (15 tools)</summary>
 
-**Paylocity** — List employees, search, view pay statements, list departments
+Search pages and databases, read page content with blocks, query databases with filters, create pages and database entries, update pages and database properties, append/update/delete blocks, archive pages, add and list comments, list workspace users
+</details>
 
-**RingCentral** — View call log, browse messages, check presence, view voicemail
+<details>
+<summary><strong>Figma</strong> — Design files and collaboration (14 tools)</summary>
 
-**Roboflow** — List projects, view dataset versions, view model metrics
+List projects and files, view file structure and specific nodes, read and post comments, resolve/delete comments, export nodes as images (PNG/SVG/PDF), list components, component sets, and styles, view version history
+</details>
 
-**Zapier** — List actions, run with natural language, preview with dry run
+<details>
+<summary><strong>Smartsheet</strong> — Sheets, rows, and collaboration (14 tools)</summary>
+
+List sheets, read sheet data with columns and rows, search across sheets, add/update/delete rows, create sheets, add/update columns, add comments to rows, list attachments, share sheets with configurable access levels
+</details>
+
+<details>
+<summary><strong>Zoom</strong> — Meetings and recordings (12 tools)</summary>
+
+List upcoming and past meetings, view details, create/update/delete meetings, browse cloud recordings, get meeting transcripts, list participants and registrants, list and view users
+</details>
+
+<details>
+<summary><strong>Adobe Sign</strong> — Agreements and e-signatures (10 tools)</summary>
+
+List agreements, view status and details, send agreements for signature, send reminders, cancel agreements, get signing URLs, download signed documents, view audit trail, get form data, list templates
+</details>
+
+<details>
+<summary><strong>SAP</strong> — Sales orders and master data (12 tools)</summary>
+
+List and search sales orders, view order details and line items, create/update/cancel orders, look up customers, list and view materials, list delivery schedules, list invoices
+</details>
+
+<details>
+<summary><strong>SAP Concur</strong> — Expense management and approvals (11 tools)</summary>
+
+List expense reports, view details with line items, create reports and expense entries, attach receipts, submit reports for approval, approve/reject reports, view pending approvals
+</details>
+
+<details>
+<summary><strong>Citrix ShareFile</strong> — File sharing and collaboration (9 tools)</summary>
+
+Browse files and folders, search documents, view item details, download text content, list shared links, upload files, create folders, delete items, create share links
+</details>
+
+<details>
+<summary><strong>LinkSquares</strong> — Contract intelligence (9 tools)</summary>
+
+List and search contracts, view contract details, list AI-extracted smart values, list amendments, list tags, add tags to contracts, list contract parties, get contract summaries
+</details>
+
+<details>
+<summary><strong>Paylocity</strong> — HR and payroll data (8 tools)</summary>
+
+List and search employees, view employee details, view pay statements and pay history, list earnings codes, view benefits enrollment, list departments
+</details>
+
+<details>
+<summary><strong>RingCentral</strong> — Calls, messages, and contacts (12 tools)</summary>
+
+View call log and call details, browse messages, send SMS, send internal messages, check presence/availability, list extensions, view voicemail, get recording info, list company contacts, view active calls
+</details>
+
+<details>
+<summary><strong>Roboflow</strong> — Computer vision and ML (10 tools)</summary>
+
+List projects, view project details, list and view dataset versions, view model metrics, upload images for annotation, list annotations, start training, check training status, run inference
+</details>
+
+<details>
+<summary><strong>Zapier</strong> — Automation across 6,000+ apps (7 tools)</summary>
+
+List available actions, run actions with natural language, preview with dry run, view action details, list/enable/disable Zaps
+</details>
 
 </details>
 
@@ -171,7 +254,7 @@ This section is for admins deploying the Asibot server on an Azure Linux VM.
 2. Name: `Asibot`, account type: **Single tenant**
 3. **Authentication → Advanced settings** → enable **Allow public client flows**
 4. **API permissions** → add **Microsoft Graph** delegated permissions:
-   - `User.Read`, `GroupMember.Read.All`, `Sites.Read.All`, `Files.Read.All`, `Mail.Read`, `Calendars.Read`, `Team.ReadBasic.All`, `ChannelMessage.Read.All`, `Chat.Read`, `Notes.Read.All`, `Tasks.Read`, `offline_access`
+   - `User.Read`, `GroupMember.Read.All`, `Sites.Read.All`, `Sites.ReadWrite.All`, `Files.Read.All`, `Files.ReadWrite.All`, `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`, `Contacts.ReadWrite`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `Chat.ReadWrite`, `Notes.Read.All`, `Tasks.Read`, `offline_access`
 5. **Grant admin consent** for all permissions
 6. Note your **Tenant ID** and **Application (client) ID**
 
@@ -226,7 +309,7 @@ Services connect in three ways. Microsoft 365 is handled by the required Entra I
 
 To get these credentials:
 - **GitHub**: Create an OAuth App at github.com → Settings → Developer settings → OAuth Apps. Set the callback URL to `https://github.com/login/device`. Copy the Client ID.
-- **Google**: Create OAuth credentials in Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client IDs. Enable the Calendar and Drive APIs.
+- **Google**: Create OAuth credentials in Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client IDs. Enable the Gmail, Calendar, Drive, and Sheets APIs.
 
 #### Personal API tokens (no admin setup, users bring their own)
 
