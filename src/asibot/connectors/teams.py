@@ -197,6 +197,174 @@ class TeamsConnector(Connector):
             return "\n\n".join(lines)
 
         @mcp.tool()
+        async def teams_reply_message(team_id: str, channel_id: str, message_id: str, body: str, ctx: Context) -> str:
+            """Reply to a message in a Teams channel thread.
+
+            Args:
+                team_id: The team ID
+                channel_id: The channel ID
+                message_id: The parent message ID to reply to
+                body: Reply message content
+            """
+            err = validation.validate_id(team_id, "team_id")
+            if err:
+                return err
+            err = validation.validate_id(channel_id, "channel_id")
+            if err:
+                return err
+            err = validation.validate_id(message_id, "message_id")
+            if err:
+                return err
+            err = validation.validate_content(body, "body")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "teams", "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST",
+                f"{GRAPH}/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies",
+                service="Teams", action="reply to message",
+                json={"body": {"content": body}},
+            )
+            if err:
+                return err
+            return "Reply sent."
+
+        @mcp.tool()
+        async def teams_create_channel(team_id: str, display_name: str, ctx: Context, description: str = "") -> str:
+            """Create a new channel in a Team.
+
+            Args:
+                team_id: The team ID
+                display_name: Channel name
+                description: Optional channel description
+            """
+            err = validation.validate_id(team_id, "team_id")
+            if err:
+                return err
+            err = validation.validate_content(display_name, "display_name")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "teams", "write")
+            if err:
+                return err
+            payload: dict = {"displayName": display_name, "membershipType": "standard"}
+            if description:
+                payload["description"] = description
+            r, err = await token_store.safe_request(
+                client, "POST", f"{GRAPH}/teams/{team_id}/channels",
+                service="Teams", action="create channel",
+                json=payload,
+            )
+            if err:
+                return err
+            ch = r.json()
+            return f"Channel created: #{ch.get('displayName', display_name)}\n  ID: {ch.get('id', '?')}"
+
+        @mcp.tool()
+        async def teams_delete_channel(team_id: str, channel_id: str, ctx: Context) -> str:
+            """Delete a channel from a Team.
+
+            Args:
+                team_id: The team ID
+                channel_id: The channel ID to delete
+            """
+            err = validation.validate_id(team_id, "team_id")
+            if err:
+                return err
+            err = validation.validate_id(channel_id, "channel_id")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "teams", "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"{GRAPH}/teams/{team_id}/channels/{channel_id}",
+                service="Teams", action="delete channel",
+            )
+            if err:
+                return err
+            return "Channel deleted."
+
+        @mcp.tool()
+        async def teams_send_chat_message(chat_id: str, body: str, ctx: Context) -> str:
+            """Send a message in a 1:1 or group chat.
+
+            Args:
+                chat_id: The chat ID (from teams_recent_chats)
+                body: Message content
+            """
+            err = validation.validate_id(chat_id, "chat_id")
+            if err:
+                return err
+            err = validation.validate_content(body, "body")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "teams", "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{GRAPH}/me/chats/{chat_id}/messages",
+                service="Teams", action="send chat message",
+                json={"body": {"content": body}},
+            )
+            if err:
+                return err
+            return "Chat message sent."
+
+        @mcp.tool()
+        async def teams_list_channel_files(team_id: str, channel_id: str, ctx: Context) -> str:
+            """List files shared in a Teams channel.
+
+            Args:
+                team_id: The team ID
+                channel_id: The channel ID
+            """
+            err = validation.validate_id(team_id, "team_id")
+            if err:
+                return err
+            err = validation.validate_id(channel_id, "channel_id")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "teams", "read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET",
+                f"{GRAPH}/teams/{team_id}/channels/{channel_id}/filesFolder",
+                service="Teams", action="get channel files folder",
+            )
+            if err:
+                return err
+            folder_id = r.json().get("id", "")
+            drive_id = r.json().get("parentReference", {}).get("driveId", "")
+            if not drive_id or not folder_id:
+                return "Could not locate channel files folder."
+            r2, err = await token_store.safe_request(
+                client, "GET",
+                f"{GRAPH}/drives/{drive_id}/items/{folder_id}/children",
+                service="Teams", action="list channel files",
+                params={"$select": "name,size,lastModifiedDateTime,webUrl,file,folder"},
+            )
+            if err:
+                return err
+            items = r2.json().get("value", [])
+            if not items:
+                return "No files in this channel."
+            lines = []
+            for item in items:
+                kind = "Folder" if "folder" in item else "File"
+                size = f"  Size: {item.get('size', 0):,} bytes\n" if "file" in item else ""
+                lines.append(
+                    f"{item.get('name', '?')} ({kind})\n"
+                    f"{size}"
+                    f"  Modified: {item.get('lastModifiedDateTime', '?')[:16]}\n"
+                    f"  URL: {item.get('webUrl', '')}"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
         async def teams_recent_chats(ctx: Context, limit: int = 10) -> str:
             """List your recent Teams chats.
 

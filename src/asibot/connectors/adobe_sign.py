@@ -190,3 +190,132 @@ class AdobeSignConnector(Connector):
             if not text or text == "{}":
                 return "No form data available for this agreement."
             return f"Form data for agreement {agreement_id}:\n{text}"
+
+        @mcp.tool()
+        async def adobe_sign_send_agreement(
+            name: str, recipient_emails: list[str], template_id: str, ctx: Context, message: str = ""
+        ) -> str:
+            """Send an Adobe Sign agreement for signature.
+
+            Args:
+                name: Agreement name
+                recipient_emails: List of signer email addresses
+                template_id: Library template ID to use
+                message: Optional message for signers
+            """
+            err = validation.validate_content(name, "name")
+            if err:
+                return err
+            err = validation.validate_id(template_id, "template_id")
+            if err:
+                return err
+            if not recipient_emails:
+                return "recipient_emails is required."
+            for email in recipient_emails:
+                err = validation.validate_email_address(email)
+                if err:
+                    return err
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="write")
+            if err:
+                return err
+            participant_sets = [
+                {
+                    "memberInfos": [{"email": email}],
+                    "order": idx + 1,
+                    "role": "SIGNER",
+                }
+                for idx, email in enumerate(recipient_emails)
+            ]
+            payload = {
+                "name": name,
+                "participantSetsInfo": participant_sets,
+                "signatureType": "ESIGN",
+                "state": "IN_PROCESS",
+                "fileInfos": [{"libraryDocumentId": template_id}],
+            }
+            if message:
+                payload["message"] = message
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/agreements",
+                service="Adobe Sign", action="send agreement",
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json()
+            return f"Agreement sent.\nID: {data.get('id', '?')}\nName: {name}\nRecipients: {', '.join(recipient_emails)}"
+
+        @mcp.tool()
+        async def adobe_sign_send_reminder(agreement_id: str, ctx: Context, message: str = "") -> str:
+            """Send a signing reminder for an Adobe Sign agreement.
+
+            Args:
+                agreement_id: The agreement ID
+                message: Optional reminder message
+            """
+            err = validation.validate_id(agreement_id, "agreement_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="write")
+            if err:
+                return err
+            payload = {"agreementId": agreement_id}
+            if message:
+                payload["comment"] = message
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/reminders",
+                service="Adobe Sign", action="send reminder",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Reminder sent for agreement {agreement_id}."
+
+        @mcp.tool()
+        async def adobe_sign_cancel_agreement(agreement_id: str, ctx: Context, comment: str = "") -> str:
+            """Cancel an Adobe Sign agreement.
+
+            Args:
+                agreement_id: The agreement ID
+                comment: Optional cancellation reason
+            """
+            err = validation.validate_id(agreement_id, "agreement_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="write")
+            if err:
+                return err
+            payload = {"value": "CANCEL"}
+            if comment:
+                payload["comment"] = comment
+            r, err = await token_store.safe_request(
+                client, "PUT", f"{API}/agreements/{agreement_id}/state",
+                service="Adobe Sign", action="cancel agreement",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Agreement {agreement_id} has been cancelled."
+
+        @mcp.tool()
+        async def adobe_sign_download_document(agreement_id: str, ctx: Context) -> str:
+            """Get the download URL for a signed Adobe Sign document.
+
+            Args:
+                agreement_id: The agreement ID
+            """
+            err = validation.validate_id(agreement_id, "agreement_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "adobe_sign", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/agreements/{agreement_id}/combinedDocument/url",
+                service="Adobe Sign", action="download document",
+            )
+            if err:
+                return err
+            data = r.json()
+            url = data.get("url", "?")
+            return f"Download URL for agreement {agreement_id}:\n{url}"

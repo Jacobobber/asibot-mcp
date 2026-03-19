@@ -396,3 +396,453 @@ class GitHubConnector(Connector):
                     f"  Branch: {run.get('head_branch', '?')} | Created: {run.get('created_at', '?')}"
                 )
             return "\n\n".join(lines)
+
+        # --- Issue Management ---
+
+        @mcp.tool()
+        async def github_update_issue(
+            owner: str, repo: str, issue_number: int, ctx: Context,
+            title: str = "", body: str = "", state: str = "",
+            labels: str = "", assignees: str = "",
+        ) -> str:
+            """Update fields on a GitHub issue.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                issue_number: Issue number
+                title: New title (optional)
+                body: New body (optional)
+                state: New state: open or closed (optional)
+                labels: Comma-separated label names to set (optional)
+                assignees: Comma-separated usernames to set (optional)
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            payload: dict = {}
+            if title:
+                err = validation.validate_content(title, "title")
+                if err:
+                    return err
+                payload["title"] = title
+            if body:
+                payload["body"] = body
+            if state:
+                if state not in ("open", "closed"):
+                    return "Invalid state. Must be 'open' or 'closed'."
+                payload["state"] = state
+            if labels:
+                payload["labels"] = [l.strip() for l in labels.split(",") if l.strip()]
+            if assignees:
+                payload["assignees"] = [a.strip() for a in assignees.split(",") if a.strip()]
+            if not payload:
+                return "No fields to update. Provide at least one of: title, body, state, labels, assignees."
+            client, uid, err = await token_store.require_service(ctx, "github", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{API}/repos/{owner}/{repo}/issues/{issue_number}",
+                service="GitHub", action="update issue",
+                json=payload,
+            )
+            if err:
+                return err
+            i = r.json()
+            return f"Updated issue #{i['number']}: {i.get('title', '?')}\nURL: {i.get('html_url', '?')}"
+
+        @mcp.tool()
+        async def github_close_issue(owner: str, repo: str, issue_number: int, ctx: Context) -> str:
+            """Close a GitHub issue.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                issue_number: Issue number
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "github", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{API}/repos/{owner}/{repo}/issues/{issue_number}",
+                service="GitHub", action="close issue",
+                json={"state": "closed"},
+            )
+            if err:
+                return err
+            i = r.json()
+            return f"Closed issue #{i['number']}: {i.get('title', '?')}\nURL: {i.get('html_url', '?')}"
+
+        @mcp.tool()
+        async def github_add_labels(owner: str, repo: str, issue_number: int, labels: str, ctx: Context) -> str:
+            """Add labels to a GitHub issue.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                issue_number: Issue number
+                labels: Comma-separated label names to add
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            err = validation.validate_content(labels, "labels")
+            if err:
+                return err
+            label_list = [l.strip() for l in labels.split(",") if l.strip()]
+            if not label_list:
+                return "labels is required."
+            client, uid, err = await token_store.require_service(ctx, "github", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/repos/{owner}/{repo}/issues/{issue_number}/labels",
+                service="GitHub", action="add labels",
+                json={"labels": label_list},
+            )
+            if err:
+                return err
+            result_labels = r.json()
+            names = ", ".join(l.get("name", "?") for l in result_labels)
+            return f"Labels on issue #{issue_number}: {names}"
+
+        @mcp.tool()
+        async def github_remove_label(owner: str, repo: str, issue_number: int, label: str, ctx: Context) -> str:
+            """Remove a label from a GitHub issue.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                issue_number: Issue number
+                label: Label name to remove
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            err = validation.validate_content(label, "label")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "github", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"{API}/repos/{owner}/{repo}/issues/{issue_number}/labels/{label}",
+                service="GitHub", action="remove label",
+            )
+            if err:
+                return err
+            return f"Removed label '{label}' from issue #{issue_number}."
+
+        @mcp.tool()
+        async def github_add_assignees(owner: str, repo: str, issue_number: int, assignees: str, ctx: Context) -> str:
+            """Add assignees to a GitHub issue.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                issue_number: Issue number
+                assignees: Comma-separated usernames to assign
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            err = validation.validate_content(assignees, "assignees")
+            if err:
+                return err
+            assignee_list = [a.strip() for a in assignees.split(",") if a.strip()]
+            if not assignee_list:
+                return "assignees is required."
+            client, uid, err = await token_store.require_service(ctx, "github", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/repos/{owner}/{repo}/issues/{issue_number}/assignees",
+                service="GitHub", action="add assignees",
+                json={"assignees": assignee_list},
+            )
+            if err:
+                return err
+            i = r.json()
+            current = ", ".join(a.get("login", "?") for a in i.get("assignees", []))
+            return f"Assignees on issue #{issue_number}: {current or 'none'}"
+
+        @mcp.tool()
+        async def github_create_comment(owner: str, repo: str, issue_number: int, body: str, ctx: Context) -> str:
+            """Add a comment to a GitHub issue or pull request.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                issue_number: Issue or PR number
+                body: Comment body
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            err = validation.validate_content(body, "body")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "github", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/repos/{owner}/{repo}/issues/{issue_number}/comments",
+                service="GitHub", action="create comment",
+                json={"body": body},
+            )
+            if err:
+                return err
+            c = r.json()
+            return f"Comment added to issue #{issue_number}.\nURL: {c.get('html_url', '?')}"
+
+        # --- Pull Request Management ---
+
+        @mcp.tool()
+        async def github_create_pr_review(
+            owner: str, repo: str, pr_number: int, ctx: Context,
+            body: str = "", event: str = "COMMENT",
+        ) -> str:
+            """Submit a review on a GitHub pull request.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                pr_number: Pull request number
+                body: Review body text (optional for APPROVE)
+                event: Review action: APPROVE, REQUEST_CHANGES, or COMMENT (default: COMMENT)
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            valid_events = ("APPROVE", "REQUEST_CHANGES", "COMMENT")
+            if event not in valid_events:
+                return f"Invalid event. Must be one of: {', '.join(valid_events)}."
+            if event == "REQUEST_CHANGES" and not body.strip():
+                return "body is required when requesting changes."
+            client, uid, err = await token_store.require_service(ctx, "github", level="write")
+            if err:
+                return err
+            payload: dict = {"event": event}
+            if body:
+                payload["body"] = body
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+                service="GitHub", action="create PR review",
+                json=payload,
+            )
+            if err:
+                return err
+            review = r.json()
+            return f"Review submitted on PR #{pr_number}: {event}\nReview ID: {review.get('id', '?')}"
+
+        @mcp.tool()
+        async def github_merge_pr(
+            owner: str, repo: str, pr_number: int, ctx: Context,
+            merge_method: str = "merge",
+        ) -> str:
+            """Merge a GitHub pull request.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                pr_number: Pull request number
+                merge_method: Merge method: merge, squash, or rebase (default: merge)
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            valid_methods = ("merge", "squash", "rebase")
+            if merge_method not in valid_methods:
+                return f"Invalid merge_method. Must be one of: {', '.join(valid_methods)}."
+            client, uid, err = await token_store.require_service(ctx, "github", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PUT", f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/merge",
+                service="GitHub", action="merge PR",
+                json={"merge_method": merge_method},
+            )
+            if err:
+                return err
+            m = r.json()
+            return f"PR #{pr_number} merged via {merge_method}.\nSHA: {m.get('sha', '?')}\nMessage: {m.get('message', '?')}"
+
+        @mcp.tool()
+        async def github_list_pr_files(owner: str, repo: str, pr_number: int, ctx: Context) -> str:
+            """List files changed in a GitHub pull request.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                pr_number: Pull request number
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/files",
+                service="GitHub", action="list PR files",
+            )
+            if err:
+                return err
+            files = r.json()
+            if not files:
+                return "No files changed in this PR."
+            lines = []
+            for f in files:
+                lines.append(
+                    f"{f.get('filename', '?')} | {f.get('status', '?')} | "
+                    f"+{f.get('additions', 0)} -{f.get('deletions', 0)}"
+                )
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def github_list_pr_reviews(owner: str, repo: str, pr_number: int, ctx: Context) -> str:
+            """List reviews on a GitHub pull request.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                pr_number: Pull request number
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+                service="GitHub", action="list PR reviews",
+            )
+            if err:
+                return err
+            reviews = r.json()
+            if not reviews:
+                return "No reviews on this PR."
+            lines = []
+            for rv in reviews:
+                lines.append(
+                    f"Review #{rv.get('id', '?')} by {rv.get('user', {}).get('login', '?')}\n"
+                    f"  State: {rv.get('state', '?')} | Submitted: {rv.get('submitted_at', '?')}"
+                )
+            return "\n\n".join(lines)
+
+        # --- Repository ---
+
+        @mcp.tool()
+        async def github_get_file_content(
+            owner: str, repo: str, path: str, ctx: Context,
+            ref: str = "",
+        ) -> str:
+            """Get file content from a GitHub repository.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+                path: File path within the repository
+                ref: Branch, tag, or commit SHA (optional, defaults to default branch)
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            err = validation.validate_content(path, "path")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
+            if err:
+                return err
+            params = {}
+            if ref:
+                params["ref"] = ref
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{owner}/{repo}/contents/{path}",
+                service="GitHub", action="get file content",
+                params=params if params else None,
+            )
+            if err:
+                return err
+            data = r.json()
+            import base64
+            if data.get("encoding") == "base64" and data.get("content"):
+                try:
+                    content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+                except Exception:
+                    content = "(binary file — cannot display)"
+            else:
+                content = data.get("content", "(no content)")
+            return (
+                f"File: {data.get('path', path)}\n"
+                f"Size: {data.get('size', '?')} bytes | SHA: {data.get('sha', '?')[:7]}\n\n"
+                f"{content}"
+            )
+
+        @mcp.tool()
+        async def github_list_tags(owner: str, repo: str, ctx: Context) -> str:
+            """List tags for a GitHub repository.
+
+            Args:
+                owner: Repository owner
+                repo: Repository name
+            """
+            err = validation.validate_id(owner, "owner")
+            if err:
+                return err
+            err = validation.validate_repo(repo)
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "github", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/repos/{owner}/{repo}/tags",
+                service="GitHub", action="list tags",
+            )
+            if err:
+                return err
+            tags = r.json()
+            if not tags:
+                return "No tags found."
+            return "\n".join(
+                f"{t.get('name', '?')} | SHA: {t.get('commit', {}).get('sha', '?')[:7]}"
+                for t in tags
+            )

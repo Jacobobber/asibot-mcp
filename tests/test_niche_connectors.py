@@ -1,5 +1,5 @@
 """Tests for niche connectors: Adobe Sign, Citrix ShareFile, Concur,
-LinkSquares, Paylocity, RingCentral, Roboflow, Zapier, SAP.
+LinkSquares, Paylocity, RingCentral, Roboflow, Zapier, SAP, Zoom.
 
 These connectors use token_store.require_service() for auth.
 """
@@ -1022,6 +1022,461 @@ class TestRingCentralGetVoicemail:
         assert "No voicemail messages found" in result
 
 
+class TestRingCentralSendSms:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.ringcentral import RingCentralConnector
+        self.tools = _register_tools(RingCentralConnector)
+
+    @pytest.mark.asyncio
+    async def test_send_sms_success(self):
+        resp = _mock_response(200, {
+            "id": "msg-001",
+            "messageStatus": "Delivered",
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("ringcentral", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["ringcentral_send_sms"]("+15551234567", "Hello there", ctx)
+        assert "SMS sent successfully" in result
+        assert "msg-001" in result
+        assert "+15551234567" in result
+
+    @pytest.mark.asyncio
+    async def test_send_sms_empty_to(self):
+        ctx = MagicMock()
+        result = await self.tools["ringcentral_send_sms"]("", "Hello", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_sms_empty_text(self):
+        ctx = MagicMock()
+        result = await self.tools["ringcentral_send_sms"]("+15551234567", "", ctx)
+        assert "required" in result.lower()
+
+
+class TestRingCentralSendMessage:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.ringcentral import RingCentralConnector
+        self.tools = _register_tools(RingCentralConnector)
+
+    @pytest.mark.asyncio
+    async def test_send_message_success(self):
+        resp = _mock_response(200, {
+            "id": "pager-001",
+            "subject": "Meeting Update",
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("ringcentral", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["ringcentral_send_message"]("101", "Meeting Update", "Please join at 3pm", ctx)
+        assert "Pager message sent successfully" in result
+        assert "pager-001" in result
+        assert "101" in result
+
+    @pytest.mark.asyncio
+    async def test_send_message_empty_to(self):
+        ctx = MagicMock()
+        result = await self.tools["ringcentral_send_message"]("", "Subject", "Text", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_message_empty_text(self):
+        ctx = MagicMock()
+        result = await self.tools["ringcentral_send_message"]("101", "Subject", "", ctx)
+        assert "required" in result.lower()
+
+
+class TestRingCentralGetCallDetails:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.ringcentral import RingCentralConnector
+        self.tools = _register_tools(RingCentralConnector)
+
+    @pytest.mark.asyncio
+    async def test_get_call_details_success(self):
+        resp = _mock_response(200, {
+            "id": "call-001",
+            "direction": "Inbound",
+            "result": "Accepted",
+            "from": {"name": "John Caller", "phoneNumber": "+15551111111"},
+            "to": {"name": "Jane Receiver", "phoneNumber": "+15552222222"},
+            "startTime": "2024-06-01T10:30:00Z",
+            "duration": 300,
+            "type": "Voice",
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("ringcentral", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["ringcentral_get_call_details"]("call-001", ctx)
+        assert "call-001" in result
+        assert "Inbound" in result
+        assert "John Caller" in result
+        assert "Jane Receiver" in result
+        assert "300" in result
+
+    @pytest.mark.asyncio
+    async def test_get_call_details_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["ringcentral_get_call_details"]("", ctx)
+        assert "required" in result.lower()
+
+
+class TestRingCentralDownloadRecording:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.ringcentral import RingCentralConnector
+        self.tools = _register_tools(RingCentralConnector)
+
+    @pytest.mark.asyncio
+    async def test_download_recording_success(self):
+        resp = _mock_response(200, {
+            "id": "rec-100",
+            "duration": 60,
+            "contentUri": "https://platform.ringcentral.com/recording/rec-100/content",
+            "contentType": "audio/mpeg",
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("ringcentral", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["ringcentral_download_recording"]("rec-100", ctx)
+        assert "rec-100" in result
+        assert "60" in result
+        assert "audio/mpeg" in result
+        assert "Content URI" in result
+
+    @pytest.mark.asyncio
+    async def test_download_recording_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["ringcentral_download_recording"]("", ctx)
+        assert "required" in result.lower()
+
+
+class TestRingCentralListContacts:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.ringcentral import RingCentralConnector
+        self.tools = _register_tools(RingCentralConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_contacts_success(self):
+        resp = _mock_response(200, {
+            "records": [
+                {"firstName": "Alice", "lastName": "Smith", "extensionNumber": "101", "email": "alice@example.com"},
+                {"firstName": "Bob", "lastName": "Jones", "extensionNumber": "102", "email": "bob@example.com"},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("ringcentral", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["ringcentral_list_contacts"](ctx)
+        assert "Alice Smith" in result
+        assert "101" in result
+        assert "Bob Jones" in result
+        assert "bob@example.com" in result
+
+    @pytest.mark.asyncio
+    async def test_list_contacts_empty(self):
+        resp = _mock_response(200, {"records": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("ringcentral", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["ringcentral_list_contacts"](ctx)
+        assert "No contacts found" in result
+
+    @pytest.mark.asyncio
+    async def test_list_contacts_with_search(self):
+        resp = _mock_response(200, {
+            "records": [
+                {"firstName": "Alice", "lastName": "Smith", "extensionNumber": "101", "email": "alice@example.com"},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("ringcentral", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["ringcentral_list_contacts"](ctx, search="Alice")
+        assert "Alice Smith" in result
+
+
+class TestRingCentralListActiveCalls:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.ringcentral import RingCentralConnector
+        self.tools = _register_tools(RingCentralConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_active_calls_success(self):
+        resp = _mock_response(200, {
+            "records": [
+                {
+                    "direction": "Outbound",
+                    "from": {"name": "Alice Smith"},
+                    "to": {"name": "Bob Jones"},
+                    "result": "InProgress",
+                },
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("ringcentral", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["ringcentral_list_active_calls"](ctx)
+        assert "Outbound" in result
+        assert "Alice Smith" in result
+        assert "Bob Jones" in result
+        assert "InProgress" in result
+
+    @pytest.mark.asyncio
+    async def test_list_active_calls_empty(self):
+        resp = _mock_response(200, {"records": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("ringcentral", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["ringcentral_list_active_calls"](ctx)
+        assert "No active calls" in result
+
+
+# --- Zoom Connector Tests ---
+
+
+class TestZoomCreateMeeting:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.zoom import ZoomConnector
+        self.tools = _register_tools(ZoomConnector)
+
+    @pytest.mark.asyncio
+    async def test_create_meeting_success(self):
+        resp = _mock_response(200, {
+            "id": 789,
+            "topic": "Planning Session",
+            "start_time": "2024-07-01T10:00:00Z",
+            "duration": 45,
+            "join_url": "https://zoom.us/j/789",
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        with (
+            _patch_require_service("zoom", client),
+            _patch_get_creds("zoom", creds),
+            patch("asibot.connectors.zoom._get_access_token", new_callable=AsyncMock, return_value="zoom_tok"),
+            patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)),
+        ):
+            result = await self.tools["zoom_create_meeting"](ctx, topic="Planning Session", start_time="2024-07-01T10:00:00Z", duration=45)
+        assert "Meeting created successfully" in result
+        assert "Planning Session" in result
+        assert "zoom.us" in result
+
+    @pytest.mark.asyncio
+    async def test_create_meeting_empty_topic(self):
+        ctx = MagicMock()
+        result = await self.tools["zoom_create_meeting"](ctx, topic="", start_time="2024-07-01T10:00:00Z")
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_meeting_empty_start_time(self):
+        ctx = MagicMock()
+        result = await self.tools["zoom_create_meeting"](ctx, topic="Test", start_time="")
+        assert "required" in result.lower()
+
+
+class TestZoomUpdateMeeting:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.zoom import ZoomConnector
+        self.tools = _register_tools(ZoomConnector)
+
+    @pytest.mark.asyncio
+    async def test_update_meeting_success(self):
+        resp = _mock_response(204)
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        with (
+            _patch_require_service("zoom", client),
+            _patch_get_creds("zoom", creds),
+            patch("asibot.connectors.zoom._get_access_token", new_callable=AsyncMock, return_value="zoom_tok"),
+            patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)),
+        ):
+            result = await self.tools["zoom_update_meeting"](123, ctx, topic="Updated Topic")
+        assert "updated successfully" in result
+        assert "123" in result
+
+    @pytest.mark.asyncio
+    async def test_update_meeting_no_fields(self):
+        client = _mock_client(_mock_response(200))
+        ctx = MagicMock()
+        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        with (
+            _patch_require_service("zoom", client),
+            _patch_get_creds("zoom", creds),
+            patch("asibot.connectors.zoom._get_access_token", new_callable=AsyncMock, return_value="zoom_tok"),
+        ):
+            result = await self.tools["zoom_update_meeting"](123, ctx)
+        assert "No fields to update" in result
+
+
+class TestZoomDeleteMeeting:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.zoom import ZoomConnector
+        self.tools = _register_tools(ZoomConnector)
+
+    @pytest.mark.asyncio
+    async def test_delete_meeting_success(self):
+        resp = _mock_response(204)
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        with (
+            _patch_require_service("zoom", client),
+            _patch_get_creds("zoom", creds),
+            patch("asibot.connectors.zoom._get_access_token", new_callable=AsyncMock, return_value="zoom_tok"),
+            patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)),
+        ):
+            result = await self.tools["zoom_delete_meeting"](999, ctx)
+        assert "deleted successfully" in result
+        assert "999" in result
+
+
+class TestZoomGetMeetingRegistrants:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.zoom import ZoomConnector
+        self.tools = _register_tools(ZoomConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_registrants_success(self):
+        resp = _mock_response(200, {
+            "registrants": [
+                {"first_name": "Alice", "last_name": "Smith", "email": "alice@example.com", "status": "approved"},
+                {"first_name": "Bob", "last_name": "Jones", "email": "bob@example.com", "status": "pending"},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        with (
+            _patch_require_service("zoom", client),
+            _patch_get_creds("zoom", creds),
+            patch("asibot.connectors.zoom._get_access_token", new_callable=AsyncMock, return_value="zoom_tok"),
+            patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)),
+        ):
+            result = await self.tools["zoom_get_meeting_registrants"](123, ctx)
+        assert "Alice Smith" in result
+        assert "alice@example.com" in result
+        assert "Bob Jones" in result
+        assert "pending" in result
+
+    @pytest.mark.asyncio
+    async def test_list_registrants_empty(self):
+        resp = _mock_response(200, {"registrants": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        with (
+            _patch_require_service("zoom", client),
+            _patch_get_creds("zoom", creds),
+            patch("asibot.connectors.zoom._get_access_token", new_callable=AsyncMock, return_value="zoom_tok"),
+            patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)),
+        ):
+            result = await self.tools["zoom_get_meeting_registrants"](123, ctx)
+        assert "No registrants found" in result
+
+
+class TestZoomListUsers:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.zoom import ZoomConnector
+        self.tools = _register_tools(ZoomConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_users_success(self):
+        resp = _mock_response(200, {
+            "users": [
+                {"first_name": "Alice", "last_name": "Smith", "email": "alice@example.com", "type": 2, "status": "active"},
+                {"first_name": "Bob", "last_name": "Jones", "email": "bob@example.com", "type": 1, "status": "active"},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        with (
+            _patch_require_service("zoom", client),
+            _patch_get_creds("zoom", creds),
+            patch("asibot.connectors.zoom._get_access_token", new_callable=AsyncMock, return_value="zoom_tok"),
+            patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)),
+        ):
+            result = await self.tools["zoom_list_users"](ctx)
+        assert "Alice Smith" in result
+        assert "alice@example.com" in result
+        assert "Bob Jones" in result
+
+    @pytest.mark.asyncio
+    async def test_list_users_empty(self):
+        resp = _mock_response(200, {"users": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        with (
+            _patch_require_service("zoom", client),
+            _patch_get_creds("zoom", creds),
+            patch("asibot.connectors.zoom._get_access_token", new_callable=AsyncMock, return_value="zoom_tok"),
+            patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)),
+        ):
+            result = await self.tools["zoom_list_users"](ctx)
+        assert "No users found" in result
+
+
+class TestZoomGetUser:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.zoom import ZoomConnector
+        self.tools = _register_tools(ZoomConnector)
+
+    @pytest.mark.asyncio
+    async def test_get_user_success(self):
+        resp = _mock_response(200, {
+            "first_name": "Alice",
+            "last_name": "Smith",
+            "email": "alice@example.com",
+            "type": 2,
+            "status": "active",
+            "pmi": 1234567890,
+            "timezone": "America/New_York",
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"account_id": "acc1", "client_id": "cid", "client_secret": "csec"}
+        with (
+            _patch_require_service("zoom", client),
+            _patch_get_creds("zoom", creds),
+            patch("asibot.connectors.zoom._get_access_token", new_callable=AsyncMock, return_value="zoom_tok"),
+            patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)),
+        ):
+            result = await self.tools["zoom_get_user"]("user-abc123", ctx)
+        assert "Alice Smith" in result
+        assert "alice@example.com" in result
+        assert "America/New_York" in result
+        assert "1234567890" in result
+
+    @pytest.mark.asyncio
+    async def test_get_user_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["zoom_get_user"]("", ctx)
+        assert "required" in result.lower()
+
+
 # --- Roboflow Connector Tests ---
 
 
@@ -1739,3 +2194,1250 @@ class TestPaylocityListDepartments:
         ):
             result = await self.tools["paylocity_list_departments"](ctx)
         assert "No departments found" in result
+
+
+# --- New ShareFile Write Tools ---
+
+
+class TestShareFileUploadFile:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.citrix_sharefile import ShareFileConnector
+        self.tools = _register_tools(ShareFileConnector)
+
+    @pytest.mark.asyncio
+    async def test_upload_success(self):
+        resp = _mock_response(200, {"Id": "file-new-001"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sharefile", client), \
+             _patch_get_creds("sharefile", {"subdomain": "mycompany", "token": "tok"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sharefile_upload_file"]("folder-001", "notes.txt", "Hello world", ctx)
+        assert "Uploaded" in result
+        assert "notes.txt" in result
+        assert "file-new-001" in result
+
+    @pytest.mark.asyncio
+    async def test_upload_empty_parent(self):
+        ctx = MagicMock()
+        result = await self.tools["sharefile_upload_file"]("", "notes.txt", "content", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_upload_empty_filename(self):
+        ctx = MagicMock()
+        result = await self.tools["sharefile_upload_file"]("folder-001", "", "content", ctx)
+        assert "required" in result.lower()
+
+
+class TestShareFileCreateFolder:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.citrix_sharefile import ShareFileConnector
+        self.tools = _register_tools(ShareFileConnector)
+
+    @pytest.mark.asyncio
+    async def test_create_folder_success(self):
+        resp = _mock_response(200, {"Id": "folder-new-001"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sharefile", client), \
+             _patch_get_creds("sharefile", {"subdomain": "mycompany", "token": "tok"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sharefile_create_folder"]("parent-001", "New Folder", ctx)
+        assert "Created folder" in result
+        assert "New Folder" in result
+        assert "folder-new-001" in result
+
+    @pytest.mark.asyncio
+    async def test_create_folder_empty_parent(self):
+        ctx = MagicMock()
+        result = await self.tools["sharefile_create_folder"]("", "New Folder", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_folder_empty_name(self):
+        ctx = MagicMock()
+        result = await self.tools["sharefile_create_folder"]("parent-001", "", ctx)
+        assert "required" in result.lower()
+
+
+class TestShareFileDeleteItem:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.citrix_sharefile import ShareFileConnector
+        self.tools = _register_tools(ShareFileConnector)
+
+    @pytest.mark.asyncio
+    async def test_delete_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sharefile", client), \
+             _patch_get_creds("sharefile", {"subdomain": "mycompany", "token": "tok"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sharefile_delete_item"]("item-del-001", ctx)
+        assert "Deleted" in result
+        assert "item-del-001" in result
+
+    @pytest.mark.asyncio
+    async def test_delete_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["sharefile_delete_item"]("", ctx)
+        assert "required" in result.lower()
+
+
+class TestShareFileCreateShare:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.citrix_sharefile import ShareFileConnector
+        self.tools = _register_tools(ShareFileConnector)
+
+    @pytest.mark.asyncio
+    async def test_create_share_success(self):
+        resp = _mock_response(200, {"Id": "share-new-001", "Uri": "https://mycompany.sharefile.com/s/share-new-001"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sharefile", client), \
+             _patch_get_creds("sharefile", {"subdomain": "mycompany", "token": "tok"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sharefile_create_share"]("item-001", "alice@example.com", ctx)
+        assert "Share created" in result
+        assert "alice@example.com" in result
+        assert "share-new-001" in result
+
+    @pytest.mark.asyncio
+    async def test_create_share_multiple_emails(self):
+        resp = _mock_response(200, {"Id": "share-new-002"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sharefile", client), \
+             _patch_get_creds("sharefile", {"subdomain": "mycompany", "token": "tok"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sharefile_create_share"]("item-001", "alice@example.com, bob@example.com", ctx)
+        assert "alice@example.com" in result
+        assert "bob@example.com" in result
+
+    @pytest.mark.asyncio
+    async def test_create_share_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["sharefile_create_share"]("", "alice@example.com", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_share_invalid_email(self):
+        ctx = MagicMock()
+        result = await self.tools["sharefile_create_share"]("item-001", "not-an-email", ctx)
+        assert "email" in result.lower() or "invalid" in result.lower()
+
+
+# --- New LinkSquares Tools ---
+
+
+class TestLinkSquaresListTags:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.linksquares import LinkSquaresConnector
+        self.tools = _register_tools(LinkSquaresConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_tags_success(self):
+        resp = _mock_response(200, {
+            "tags": [
+                {"name": "Confidential", "id": "tag-001"},
+                {"name": "Reviewed", "id": "tag-002"},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("linksquares", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["linksquares_list_tags"](ctx)
+        assert "Confidential" in result
+        assert "Reviewed" in result
+        assert "tag-001" in result
+
+    @pytest.mark.asyncio
+    async def test_list_tags_empty(self):
+        resp = _mock_response(200, {"tags": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("linksquares", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["linksquares_list_tags"](ctx)
+        assert "No tags found" in result
+
+
+class TestLinkSquaresAddTag:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.linksquares import LinkSquaresConnector
+        self.tools = _register_tools(LinkSquaresConnector)
+
+    @pytest.mark.asyncio
+    async def test_add_tag_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("linksquares", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["linksquares_add_tag"]("c-001", "Urgent", ctx)
+        assert "Tag" in result
+        assert "Urgent" in result
+        assert "c-001" in result
+
+    @pytest.mark.asyncio
+    async def test_add_tag_empty_contract_id(self):
+        ctx = MagicMock()
+        result = await self.tools["linksquares_add_tag"]("", "Urgent", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_add_tag_empty_tag(self):
+        ctx = MagicMock()
+        result = await self.tools["linksquares_add_tag"]("c-001", "", ctx)
+        assert "required" in result.lower()
+
+
+class TestLinkSquaresListParties:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.linksquares import LinkSquaresConnector
+        self.tools = _register_tools(LinkSquaresConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_parties_success(self):
+        resp = _mock_response(200, {
+            "parties": [
+                {"name": "Acme Corp", "role": "Counterparty"},
+                {"name": "Our Company", "role": "Owner"},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("linksquares", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["linksquares_list_parties"]("c-001", ctx)
+        assert "Acme Corp" in result
+        assert "Counterparty" in result
+        assert "Our Company" in result
+        assert "Owner" in result
+
+    @pytest.mark.asyncio
+    async def test_list_parties_empty(self):
+        resp = _mock_response(200, {"parties": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("linksquares", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["linksquares_list_parties"]("c-001", ctx)
+        assert "No parties found" in result
+
+    @pytest.mark.asyncio
+    async def test_list_parties_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["linksquares_list_parties"]("", ctx)
+        assert "required" in result.lower()
+
+
+class TestLinkSquaresGetSummary:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.linksquares import LinkSquaresConnector
+        self.tools = _register_tools(LinkSquaresConnector)
+
+    @pytest.mark.asyncio
+    async def test_get_summary_success(self):
+        resp = _mock_response(200, {
+            "summary": "This contract establishes a 3-year service agreement with Acme Corp for IT consulting."
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("linksquares", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["linksquares_get_summary"]("c-001", ctx)
+        assert "3-year service agreement" in result
+        assert "c-001" in result
+
+    @pytest.mark.asyncio
+    async def test_get_summary_empty(self):
+        resp = _mock_response(200, {"summary": ""})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("linksquares", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["linksquares_get_summary"]("c-001", ctx)
+        assert "No summary available" in result
+
+    @pytest.mark.asyncio
+    async def test_get_summary_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["linksquares_get_summary"]("", ctx)
+        assert "required" in result.lower()
+
+
+# --- New Roboflow Tools ---
+
+
+class TestRoboflowUploadImage:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.roboflow import RoboflowConnector
+        self.tools = _register_tools(RoboflowConnector)
+
+    @pytest.mark.asyncio
+    async def test_upload_success(self):
+        resp = _mock_response(200, {"id": "img-001"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("roboflow", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["roboflow_upload_image"]("my-project", "https://example.com/img.jpg", ctx)
+        assert "uploaded" in result.lower()
+        assert "img-001" in result
+        assert "train" in result
+
+    @pytest.mark.asyncio
+    async def test_upload_custom_split(self):
+        resp = _mock_response(200, {"id": "img-002"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("roboflow", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["roboflow_upload_image"]("my-project", "https://example.com/img.jpg", ctx, split="valid")
+        assert "valid" in result
+
+    @pytest.mark.asyncio
+    async def test_upload_empty_project_id(self):
+        ctx = MagicMock()
+        result = await self.tools["roboflow_upload_image"]("", "https://example.com/img.jpg", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_upload_empty_image_url(self):
+        ctx = MagicMock()
+        result = await self.tools["roboflow_upload_image"]("my-project", "", ctx)
+        assert "required" in result.lower()
+
+
+class TestRoboflowListAnnotations:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.roboflow import RoboflowConnector
+        self.tools = _register_tools(RoboflowConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_annotations_success(self):
+        resp = _mock_response(200, {
+            "annotations": [
+                {"label": "car", "bbox": {"x": 10, "y": 20, "w": 100, "h": 50}},
+                {"label": "person", "bbox": {"x": 200, "y": 300, "w": 60, "h": 120}},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("roboflow", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["roboflow_list_annotations"]("my-project", "img-001", ctx)
+        assert "car" in result
+        assert "person" in result
+
+    @pytest.mark.asyncio
+    async def test_list_annotations_empty(self):
+        resp = _mock_response(200, {"annotations": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("roboflow", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["roboflow_list_annotations"]("my-project", "img-001", ctx)
+        assert "No annotations found" in result
+
+    @pytest.mark.asyncio
+    async def test_list_annotations_empty_project_id(self):
+        ctx = MagicMock()
+        result = await self.tools["roboflow_list_annotations"]("", "img-001", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_list_annotations_empty_image_id(self):
+        ctx = MagicMock()
+        result = await self.tools["roboflow_list_annotations"]("my-project", "", ctx)
+        assert "required" in result.lower()
+
+
+class TestRoboflowStartTraining:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.roboflow import RoboflowConnector
+        self.tools = _register_tools(RoboflowConnector)
+
+    @pytest.mark.asyncio
+    async def test_start_training_success(self):
+        resp = _mock_response(200, {"status": "training"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("roboflow", client), \
+             _patch_get_creds("roboflow", {"api_key": "key", "workspace": "myws"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["roboflow_start_training"]("my-project", "3", ctx)
+        assert "Training started" in result
+        assert "my-project" in result
+        assert "v3" in result
+
+    @pytest.mark.asyncio
+    async def test_start_training_empty_project_id(self):
+        ctx = MagicMock()
+        result = await self.tools["roboflow_start_training"]("", "3", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_start_training_empty_version_id(self):
+        ctx = MagicMock()
+        result = await self.tools["roboflow_start_training"]("my-project", "", ctx)
+        assert "required" in result.lower()
+
+
+class TestRoboflowGetTrainingStatus:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.roboflow import RoboflowConnector
+        self.tools = _register_tools(RoboflowConnector)
+
+    @pytest.mark.asyncio
+    async def test_get_training_status_success(self):
+        resp = _mock_response(200, {
+            "model": {"status": "training", "progress": "75%"},
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("roboflow", client), \
+             _patch_get_creds("roboflow", {"api_key": "key", "workspace": "myws"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["roboflow_get_training_status"]("my-project", "3", ctx)
+        assert "training" in result.lower()
+        assert "75%" in result
+
+    @pytest.mark.asyncio
+    async def test_get_training_status_empty_project_id(self):
+        ctx = MagicMock()
+        result = await self.tools["roboflow_get_training_status"]("", "3", ctx)
+        assert "required" in result.lower()
+
+
+class TestRoboflowPredict:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.roboflow import RoboflowConnector
+        self.tools = _register_tools(RoboflowConnector)
+
+    @pytest.mark.asyncio
+    async def test_predict_success(self):
+        resp = _mock_response(200, {
+            "predictions": [
+                {"class": "car", "confidence": 0.95, "x": 150, "y": 200},
+                {"class": "truck", "confidence": 0.82, "x": 400, "y": 300},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("roboflow", client), \
+             _patch_get_creds("roboflow", {"api_key": "key", "workspace": "myws"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["roboflow_predict"]("my-project", "3", "https://example.com/img.jpg", ctx)
+        assert "car" in result
+        assert "0.95" in result
+        assert "truck" in result
+
+    @pytest.mark.asyncio
+    async def test_predict_no_predictions(self):
+        resp = _mock_response(200, {"predictions": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("roboflow", client), \
+             _patch_get_creds("roboflow", {"api_key": "key", "workspace": "myws"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["roboflow_predict"]("my-project", "3", "https://example.com/img.jpg", ctx)
+        assert "No predictions" in result
+
+    @pytest.mark.asyncio
+    async def test_predict_empty_project_id(self):
+        ctx = MagicMock()
+        result = await self.tools["roboflow_predict"]("", "3", "https://example.com/img.jpg", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_predict_empty_image_url(self):
+        ctx = MagicMock()
+        result = await self.tools["roboflow_predict"]("my-project", "3", "", ctx)
+        assert "required" in result.lower()
+
+
+# --- New Paylocity Tools ---
+
+
+class TestPaylocityGetPayHistory:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.paylocity import PaylocityConnector
+        self.tools = _register_tools(PaylocityConnector)
+
+    @pytest.mark.asyncio
+    async def test_get_pay_history_success(self):
+        resp = _mock_response(200, {
+            "payStatement": [
+                {"checkDate": "2024-01-15", "grossPay": 5000.00, "netPay": 3500.00},
+                {"checkDate": "2024-02-15", "grossPay": 5000.00, "netPay": 3500.00},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"client_id": "cid", "client_secret": "csec", "company_id": "comp1"}
+        with (
+            _patch_require_service("paylocity", client),
+            _patch_get_creds("paylocity", creds),
+            patch("asibot.connectors.paylocity._get_access_token", new_callable=AsyncMock, return_value="tok"),
+        ):
+            result = await self.tools["paylocity_get_pay_history"]("E001", "2024", ctx)
+        assert "Pay history" in result
+        assert "2024-01-15" in result
+        assert "2024-02-15" in result
+        assert "5000" in result
+
+    @pytest.mark.asyncio
+    async def test_get_pay_history_empty(self):
+        resp = _mock_response(200, {"payStatement": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"client_id": "cid", "client_secret": "csec", "company_id": "comp1"}
+        with (
+            _patch_require_service("paylocity", client),
+            _patch_get_creds("paylocity", creds),
+            patch("asibot.connectors.paylocity._get_access_token", new_callable=AsyncMock, return_value="tok"),
+        ):
+            result = await self.tools["paylocity_get_pay_history"]("E001", "2024", ctx)
+        assert "No pay history found" in result
+
+    @pytest.mark.asyncio
+    async def test_get_pay_history_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["paylocity_get_pay_history"]("", "2024", ctx)
+        assert "required" in result.lower()
+
+
+class TestPaylocityListEarnings:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.paylocity import PaylocityConnector
+        self.tools = _register_tools(PaylocityConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_earnings_success(self):
+        resp = _mock_response(200, json_data=None)
+        resp.json.return_value = [
+            {"earningCode": "REG", "description": "Regular Pay", "amount": 5000.00},
+            {"earningCode": "OT", "description": "Overtime", "amount": 750.00},
+        ]
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"client_id": "cid", "client_secret": "csec", "company_id": "comp1"}
+        with (
+            _patch_require_service("paylocity", client),
+            _patch_get_creds("paylocity", creds),
+            patch("asibot.connectors.paylocity._get_access_token", new_callable=AsyncMock, return_value="tok"),
+        ):
+            result = await self.tools["paylocity_list_earnings"]("E001", ctx)
+        assert "REG" in result
+        assert "Regular Pay" in result
+        assert "OT" in result
+        assert "Overtime" in result
+
+    @pytest.mark.asyncio
+    async def test_list_earnings_empty(self):
+        resp = _mock_response(200, json_data=None)
+        resp.json.return_value = []
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"client_id": "cid", "client_secret": "csec", "company_id": "comp1"}
+        with (
+            _patch_require_service("paylocity", client),
+            _patch_get_creds("paylocity", creds),
+            patch("asibot.connectors.paylocity._get_access_token", new_callable=AsyncMock, return_value="tok"),
+        ):
+            result = await self.tools["paylocity_list_earnings"]("E001", ctx)
+        assert "No earnings found" in result
+
+    @pytest.mark.asyncio
+    async def test_list_earnings_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["paylocity_list_earnings"]("", ctx)
+        assert "required" in result.lower()
+
+
+class TestPaylocityGetBenefits:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.paylocity import PaylocityConnector
+        self.tools = _register_tools(PaylocityConnector)
+
+    @pytest.mark.asyncio
+    async def test_get_benefits_success(self):
+        resp = _mock_response(200, json_data=None)
+        resp.json.return_value = [
+            {"planDescription": "Health PPO", "coverageLevel": "Family", "effectiveDate": "2024-01-01"},
+            {"planDescription": "Dental", "coverageLevel": "Employee Only", "effectiveDate": "2024-01-01"},
+        ]
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"client_id": "cid", "client_secret": "csec", "company_id": "comp1"}
+        with (
+            _patch_require_service("paylocity", client),
+            _patch_get_creds("paylocity", creds),
+            patch("asibot.connectors.paylocity._get_access_token", new_callable=AsyncMock, return_value="tok"),
+        ):
+            result = await self.tools["paylocity_get_benefits"]("E001", ctx)
+        assert "Health PPO" in result
+        assert "Family" in result
+        assert "Dental" in result
+        assert "Employee Only" in result
+
+    @pytest.mark.asyncio
+    async def test_get_benefits_empty(self):
+        resp = _mock_response(200, json_data=None)
+        resp.json.return_value = []
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        creds = {"client_id": "cid", "client_secret": "csec", "company_id": "comp1"}
+        with (
+            _patch_require_service("paylocity", client),
+            _patch_get_creds("paylocity", creds),
+            patch("asibot.connectors.paylocity._get_access_token", new_callable=AsyncMock, return_value="tok"),
+        ):
+            result = await self.tools["paylocity_get_benefits"]("E001", ctx)
+        assert "No benefits found" in result
+
+    @pytest.mark.asyncio
+    async def test_get_benefits_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["paylocity_get_benefits"]("", ctx)
+        assert "required" in result.lower()
+
+
+# --- New Zapier Tools ---
+
+
+class TestZapierListZaps:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.zapier import ZapierConnector
+        self.tools = _register_tools(ZapierConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_zaps_success(self):
+        resp = _mock_response(200, {
+            "results": [
+                {"title": "New lead to Slack", "id": "zap-001", "status": "on"},
+                {"title": "Email to sheet", "id": "zap-002", "status": "off"},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("zapier", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["zapier_list_zaps"](ctx)
+        assert "New lead to Slack" in result
+        assert "zap-001" in result
+        assert "Email to sheet" in result
+
+    @pytest.mark.asyncio
+    async def test_list_zaps_with_status_filter(self):
+        resp = _mock_response(200, {
+            "results": [
+                {"title": "Active Zap", "id": "zap-010", "status": "on"},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("zapier", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["zapier_list_zaps"](ctx, status="on")
+        assert "Active Zap" in result
+
+    @pytest.mark.asyncio
+    async def test_list_zaps_empty(self):
+        resp = _mock_response(200, {"results": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("zapier", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["zapier_list_zaps"](ctx)
+        assert "No Zaps found" in result
+
+
+class TestZapierEnableZap:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.zapier import ZapierConnector
+        self.tools = _register_tools(ZapierConnector)
+
+    @pytest.mark.asyncio
+    async def test_enable_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("zapier", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["zapier_enable_zap"]("zap-001", ctx)
+        assert "enabled" in result.lower()
+        assert "zap-001" in result
+
+    @pytest.mark.asyncio
+    async def test_enable_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["zapier_enable_zap"]("", ctx)
+        assert "required" in result.lower()
+
+
+class TestZapierDisableZap:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.zapier import ZapierConnector
+        self.tools = _register_tools(ZapierConnector)
+
+    @pytest.mark.asyncio
+    async def test_disable_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("zapier", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["zapier_disable_zap"]("zap-001", ctx)
+        assert "disabled" in result.lower()
+        assert "zap-001" in result
+
+    @pytest.mark.asyncio
+    async def test_disable_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["zapier_disable_zap"]("", ctx)
+        assert "required" in result.lower()
+
+
+class TestAdobeSignSendAgreement:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.adobe_sign import AdobeSignConnector
+        self.tools = _register_tools(AdobeSignConnector)
+
+    @pytest.mark.asyncio
+    async def test_send_success(self):
+        resp = _mock_response(200, {"id": "agr-new-001"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("adobe_sign", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["adobe_sign_send_agreement"](
+                "NDA for Acme", ["signer@acme.com"], "tpl-001", ctx, message="Please sign"
+            )
+        assert "Agreement sent" in result
+        assert "agr-new-001" in result
+        assert "signer@acme.com" in result
+
+    @pytest.mark.asyncio
+    async def test_send_empty_name(self):
+        ctx = MagicMock()
+        result = await self.tools["adobe_sign_send_agreement"](
+            "", ["signer@acme.com"], "tpl-001", ctx
+        )
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_empty_recipients(self):
+        ctx = MagicMock()
+        result = await self.tools["adobe_sign_send_agreement"](
+            "NDA", [], "tpl-001", ctx
+        )
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_invalid_email(self):
+        ctx = MagicMock()
+        result = await self.tools["adobe_sign_send_agreement"](
+            "NDA", ["not-an-email"], "tpl-001", ctx
+        )
+        assert "email" in result.lower() or "invalid" in result.lower()
+
+
+
+class TestAdobeSignSendReminder:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.adobe_sign import AdobeSignConnector
+        self.tools = _register_tools(AdobeSignConnector)
+
+    @pytest.mark.asyncio
+    async def test_send_reminder_success(self):
+        resp = _mock_response(200, {"id": "rem-001"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("adobe_sign", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["adobe_sign_send_reminder"]("agr-001", ctx, message="Please sign soon")
+        assert "Reminder sent" in result
+        assert "agr-001" in result
+
+    @pytest.mark.asyncio
+    async def test_send_reminder_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["adobe_sign_send_reminder"]("", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestAdobeSignCancelAgreement:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.adobe_sign import AdobeSignConnector
+        self.tools = _register_tools(AdobeSignConnector)
+
+    @pytest.mark.asyncio
+    async def test_cancel_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("adobe_sign", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["adobe_sign_cancel_agreement"]("agr-001", ctx, comment="No longer needed")
+        assert "cancelled" in result.lower()
+        assert "agr-001" in result
+
+    @pytest.mark.asyncio
+    async def test_cancel_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["adobe_sign_cancel_agreement"]("", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestAdobeSignDownloadDocument:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.adobe_sign import AdobeSignConnector
+        self.tools = _register_tools(AdobeSignConnector)
+
+    @pytest.mark.asyncio
+    async def test_download_success(self):
+        resp = _mock_response(200, {"url": "https://sign.example.com/download/agr-001.pdf"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("adobe_sign", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["adobe_sign_download_document"]("agr-001", ctx)
+        assert "Download URL" in result
+        assert "https://sign.example.com/download/agr-001.pdf" in result
+
+    @pytest.mark.asyncio
+    async def test_download_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["adobe_sign_download_document"]("", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestConcurCreateReport:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.concur import ConcurConnector
+        self.tools = _register_tools(ConcurConnector)
+
+    @pytest.mark.asyncio
+    async def test_create_success(self):
+        resp = _mock_response(200, {"ID": "rpt-new-001"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("concur", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["concur_create_report"]("Q2 Travel", ctx, policy_id="pol-001")
+        assert "Report created" in result
+        assert "rpt-new-001" in result
+        assert "Q2 Travel" in result
+
+    @pytest.mark.asyncio
+    async def test_create_empty_name(self):
+        ctx = MagicMock()
+        result = await self.tools["concur_create_report"]("", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestConcurCreateExpense:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.concur import ConcurConnector
+        self.tools = _register_tools(ConcurConnector)
+
+    @pytest.mark.asyncio
+    async def test_create_expense_success(self):
+        resp = _mock_response(200, {"ID": "exp-new-001"})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("concur", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["concur_create_expense"](
+                "rpt-001", "Airfare", 450.00, "USD", "2024-03-15", ctx, description="Flight to SFO"
+            )
+        assert "Expense created" in result
+        assert "exp-new-001" in result
+        assert "Airfare" in result
+        assert "USD" in result
+
+    @pytest.mark.asyncio
+    async def test_create_expense_empty_report_id(self):
+        ctx = MagicMock()
+        result = await self.tools["concur_create_expense"](
+            "", "Airfare", 100.0, "USD", "2024-01-01", ctx
+        )
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_expense_invalid_date(self):
+        ctx = MagicMock()
+        result = await self.tools["concur_create_expense"](
+            "rpt-001", "Airfare", 100.0, "USD", "not-a-date", ctx
+        )
+        assert "invalid" in result.lower() or "YYYY-MM-DD" in result
+
+
+
+class TestConcurSubmitReport:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.concur import ConcurConnector
+        self.tools = _register_tools(ConcurConnector)
+
+    @pytest.mark.asyncio
+    async def test_submit_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("concur", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["concur_submit_report"]("rpt-001", ctx)
+        assert "submitted" in result.lower()
+        assert "rpt-001" in result
+
+    @pytest.mark.asyncio
+    async def test_submit_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["concur_submit_report"]("", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestConcurApproveReport:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.concur import ConcurConnector
+        self.tools = _register_tools(ConcurConnector)
+
+    @pytest.mark.asyncio
+    async def test_approve_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("concur", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["concur_approve_report"]("rpt-001", ctx, comment="Looks good")
+        assert "approved" in result.lower()
+        assert "rpt-001" in result
+
+    @pytest.mark.asyncio
+    async def test_approve_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["concur_approve_report"]("", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestConcurRejectReport:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.concur import ConcurConnector
+        self.tools = _register_tools(ConcurConnector)
+
+    @pytest.mark.asyncio
+    async def test_reject_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("concur", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["concur_reject_report"]("rpt-001", ctx, comment="Missing receipts")
+        assert "sent back" in result.lower()
+        assert "rpt-001" in result
+
+    @pytest.mark.asyncio
+    async def test_reject_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["concur_reject_report"]("", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestConcurAddReceipt:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.concur import ConcurConnector
+        self.tools = _register_tools(ConcurConnector)
+
+    @pytest.mark.asyncio
+    async def test_add_receipt_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("concur", client), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["concur_add_receipt"]("exp-001", "receipt.jpg", "image/jpeg", ctx)
+        assert "receipt.jpg" in result
+        assert "exp-001" in result
+
+    @pytest.mark.asyncio
+    async def test_add_receipt_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["concur_add_receipt"]("", "receipt.jpg", "image/jpeg", ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_add_receipt_empty_filename(self):
+        ctx = MagicMock()
+        result = await self.tools["concur_add_receipt"]("exp-001", "", "image/jpeg", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestSAPCreateOrder:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.sap import SAPConnector
+        self.tools = _register_tools(SAPConnector)
+
+    @pytest.mark.asyncio
+    async def test_create_success(self):
+        resp = _mock_response(200, {
+            "d": {"SalesOrder": "0000099001"}
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sap", client), \
+             _patch_get_creds("sap", {"token": "tok", "base_url": "https://sap.example.com"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sap_create_order"](
+                "BP-001", [{"material": "MAT-001", "quantity": 10}], ctx, requested_date="2024-07-01"
+            )
+        assert "Sales order created" in result
+        assert "0000099001" in result
+        assert "BP-001" in result
+
+    @pytest.mark.asyncio
+    async def test_create_empty_customer(self):
+        ctx = MagicMock()
+        result = await self.tools["sap_create_order"](
+            "", [{"material": "MAT-001", "quantity": 10}], ctx
+        )
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_empty_items(self):
+        ctx = MagicMock()
+        result = await self.tools["sap_create_order"]("BP-001", [], ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_invalid_date(self):
+        ctx = MagicMock()
+        result = await self.tools["sap_create_order"](
+            "BP-001", [{"material": "MAT-001", "quantity": 10}], ctx, requested_date="bad-date"
+        )
+        assert "invalid" in result.lower() or "YYYY-MM-DD" in result
+
+
+
+class TestSAPUpdateOrder:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.sap import SAPConnector
+        self.tools = _register_tools(SAPConnector)
+
+    @pytest.mark.asyncio
+    async def test_update_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sap", client), \
+             _patch_get_creds("sap", {"token": "tok", "base_url": "https://sap.example.com"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sap_update_order"](
+                "0000012345", {"RequestedDeliveryDate": "2024-08-01"}, ctx
+            )
+        assert "updated" in result.lower()
+        assert "0000012345" in result
+        assert "RequestedDeliveryDate" in result
+
+    @pytest.mark.asyncio
+    async def test_update_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["sap_update_order"]("", {"field": "val"}, ctx)
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_update_empty_fields(self):
+        ctx = MagicMock()
+        result = await self.tools["sap_update_order"]("0000012345", {}, ctx)
+        assert "required" in result.lower()
+
+
+
+class TestSAPCancelOrder:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.sap import SAPConnector
+        self.tools = _register_tools(SAPConnector)
+
+    @pytest.mark.asyncio
+    async def test_cancel_success(self):
+        resp = _mock_response(200, {})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sap", client), \
+             _patch_get_creds("sap", {"token": "tok", "base_url": "https://sap.example.com"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sap_cancel_order"]("0000012345", ctx, reason="Customer request")
+        assert "cancelled" in result.lower()
+        assert "0000012345" in result
+
+    @pytest.mark.asyncio
+    async def test_cancel_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["sap_cancel_order"]("", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestSAPListMaterials:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.sap import SAPConnector
+        self.tools = _register_tools(SAPConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_success(self):
+        resp = _mock_response(200, {
+            "d": {
+                "results": [
+                    {"Material": "MAT-001", "MaterialDescription": "Steel Pipe", "MaterialType": "HAWA", "MaterialGroup": "001"},
+                    {"Material": "MAT-002", "MaterialDescription": "Copper Wire", "MaterialType": "HAWA", "MaterialGroup": "002"},
+                ]
+            }
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sap", client), \
+             _patch_get_creds("sap", {"token": "tok", "base_url": "https://sap.example.com"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sap_list_materials"](ctx, search="Steel")
+        assert "MAT-001" in result
+        assert "Steel Pipe" in result
+        assert "MAT-002" in result
+
+    @pytest.mark.asyncio
+    async def test_list_empty(self):
+        resp = _mock_response(200, {"d": {"results": []}})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sap", client), \
+             _patch_get_creds("sap", {"token": "tok", "base_url": "https://sap.example.com"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sap_list_materials"](ctx)
+        assert "No materials found" in result
+
+
+
+class TestSAPGetMaterial:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.sap import SAPConnector
+        self.tools = _register_tools(SAPConnector)
+
+    @pytest.mark.asyncio
+    async def test_get_success(self):
+        resp = _mock_response(200, {
+            "d": {
+                "MaterialDescription": "Steel Pipe 50mm",
+                "MaterialType": "HAWA",
+                "MaterialGroup": "001",
+                "BaseUnit": "EA",
+                "GrossWeight": "2.5",
+            }
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sap", client), \
+             _patch_get_creds("sap", {"token": "tok", "base_url": "https://sap.example.com"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sap_get_material"]("MAT-001", ctx)
+        assert "Steel Pipe 50mm" in result
+        assert "MAT-001" in result
+        assert "HAWA" in result
+        assert "EA" in result
+
+    @pytest.mark.asyncio
+    async def test_get_empty_id(self):
+        ctx = MagicMock()
+        result = await self.tools["sap_get_material"]("", ctx)
+        assert "required" in result.lower()
+
+
+
+class TestSAPListInvoices:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from asibot.connectors.sap import SAPConnector
+        self.tools = _register_tools(SAPConnector)
+
+    @pytest.mark.asyncio
+    async def test_list_success(self):
+        resp = _mock_response(200, {
+            "d": {
+                "results": [
+                    {
+                        "BillingDocument": "INV-001",
+                        "BillingDocumentType": "F2",
+                        "SoldToParty": "BP-001",
+                        "TotalNetAmount": "50000.00",
+                        "TransactionCurrency": "EUR",
+                        "BillingDocumentDate": "2024-06-15",
+                    },
+                ]
+            }
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sap", client), \
+             _patch_get_creds("sap", {"token": "tok", "base_url": "https://sap.example.com"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sap_list_invoices"](ctx, customer_id="BP-001")
+        assert "INV-001" in result
+        assert "BP-001" in result
+        assert "50000.00" in result
+        assert "EUR" in result
+
+    @pytest.mark.asyncio
+    async def test_list_empty(self):
+        resp = _mock_response(200, {"d": {"results": []}})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("sap", client), \
+             _patch_get_creds("sap", {"token": "tok", "base_url": "https://sap.example.com"}), \
+             patch.object(token_store, "safe_request", new_callable=AsyncMock, return_value=(resp, None)):
+            result = await self.tools["sap_list_invoices"](ctx)
+        assert "No invoices found" in result
+

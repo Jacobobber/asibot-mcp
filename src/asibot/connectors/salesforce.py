@@ -235,3 +235,177 @@ class SalesforceConnector(Connector):
             if err:
                 return err
             return f"Updated {object_type} record {record_id}."
+
+        @mcp.tool()
+        async def salesforce_delete_record(object_type: str, record_id: str, ctx: Context) -> str:
+            """Delete a Salesforce record.
+
+            Args:
+                object_type: Salesforce object type (e.g., "Account", "Contact", "Opportunity")
+                record_id: The record ID
+            """
+            err = validation.validate_sf_object_type(object_type)
+            if err:
+                return err
+            err = validation.validate_id(record_id, "record_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "salesforce", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"/sobjects/{object_type}/{record_id}",
+                service="Salesforce", action="delete record",
+            )
+            if err:
+                return err
+            return f"Deleted {object_type} record {record_id}."
+
+        @mcp.tool()
+        async def salesforce_list_objects(ctx: Context) -> str:
+            """List available Salesforce object types."""
+            client, uid, err = await token_store.require_service(ctx, "salesforce", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", "/sobjects",
+                service="Salesforce", action="list objects",
+            )
+            if err:
+                return err
+            sobjects = r.json().get("sobjects", [])
+            if not sobjects:
+                return "No objects found."
+            lines = []
+            for obj in sobjects:
+                name = obj.get("name", "?")
+                label = obj.get("label", "?")
+                queryable = "queryable" if obj.get("queryable") else "not queryable"
+                lines.append(f"{name} ({label}) — {queryable}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def salesforce_list_reports(ctx: Context, folder_id: str = "") -> str:
+            """List Salesforce reports, optionally filtered by folder.
+
+            Args:
+                folder_id: Folder ID to filter reports (optional)
+            """
+            client, uid, err = await token_store.require_service(ctx, "salesforce", level="read")
+            if err:
+                return err
+            url = "/analytics/reports"
+            params = {}
+            if folder_id and folder_id.strip():
+                err = validation.validate_id(folder_id, "folder_id")
+                if err:
+                    return err
+                params["filterByFolderId"] = folder_id
+            r, err = await token_store.safe_request(
+                client, "GET", url,
+                service="Salesforce", action="list reports",
+                params=params if params else None,
+            )
+            if err:
+                return err
+            reports = r.json()
+            if not isinstance(reports, list):
+                reports = []
+            if not reports:
+                return "No reports found."
+            lines = []
+            for rpt in reports:
+                name = rpt.get("name", "?")
+                rpt_id = rpt.get("id", "?")
+                rpt_type = rpt.get("reportFormat", "?")
+                lines.append(f"{name}\n  ID: {rpt_id} | Format: {rpt_type}")
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def salesforce_run_report(report_id: str, ctx: Context) -> str:
+            """Run a Salesforce report and return its results.
+
+            Args:
+                report_id: The report ID to run
+            """
+            err = validation.validate_id(report_id, "report_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "salesforce", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"/analytics/reports/{report_id}",
+                service="Salesforce", action="run report",
+            )
+            if err:
+                return err
+            data = r.json()
+            attrs = data.get("attributes", {})
+            report_name = attrs.get("reportName", "Report")
+            fact_map = data.get("factMap", {})
+            agg_key = "T!T"
+            agg = fact_map.get(agg_key, {})
+            rows = agg.get("rows", [])
+            if not rows:
+                return f"{report_name}: No data rows returned."
+            lines = [f"{report_name} — {len(rows)} row(s)\n"]
+            for row in rows[:50]:
+                cells = row.get("dataCells", [])
+                values = [c.get("label", "?") for c in cells]
+                lines.append("  " + " | ".join(values))
+            if len(rows) > 50:
+                lines.append(f"  ... and {len(rows) - 50} more rows")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def salesforce_list_recent(ctx: Context, object_type: str = "", limit: int = 10) -> str:
+            """List recently viewed Salesforce records.
+
+            Args:
+                object_type: Salesforce object type to filter (optional, e.g., "Account")
+                limit: Max results (default: 10)
+            """
+            if object_type and object_type.strip():
+                err = validation.validate_sf_object_type(object_type)
+                if err:
+                    return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "salesforce", level="read")
+            if err:
+                return err
+            params = {"limit": limit}
+            url = "/recent"
+            if object_type and object_type.strip():
+                url = f"/sobjects/{object_type}"
+                params = {"limit": limit}
+                # Use SOQL for recent records of a specific type
+                soql = f"SELECT Id, Name FROM {object_type} ORDER BY LastViewedDate DESC NULLS LAST LIMIT {limit}"
+                r, err = await token_store.safe_request(
+                    client, "GET", "/query",
+                    service="Salesforce", action="list recent",
+                    params={"q": soql},
+                )
+                if err:
+                    return err
+                records = r.json().get("records", [])
+            else:
+                r, err = await token_store.safe_request(
+                    client, "GET", url,
+                    service="Salesforce", action="list recent",
+                    params=params,
+                )
+                if err:
+                    return err
+                records = r.json()
+                if not isinstance(records, list):
+                    records = []
+            if not records:
+                return "No recent records found."
+            lines = []
+            for rec in records:
+                obj_type = rec.get("attributes", {}).get("type", "?")
+                name = rec.get("Name", "?")
+                rec_id = rec.get("Id", "?")
+                lines.append(f"[{obj_type}] {name} — ID: {rec_id}")
+            return "\n".join(lines)

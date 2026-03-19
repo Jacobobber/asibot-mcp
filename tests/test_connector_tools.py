@@ -512,6 +512,275 @@ class TestSalesforceGetRecord:
         assert "Unknown Salesforce object" in result
 
 
+class TestSalesforceDeleteRecord:
+    @pytest.mark.asyncio
+    async def test_delete_success(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(204)
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_delete_record"]("Account", "001", ctx)
+        assert "Deleted Account record 001" in result
+
+    @pytest.mark.asyncio
+    async def test_delete_invalid_object_type(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        ctx = MagicMock()
+        result = await tools["salesforce_delete_record"]("FakeObj", "001", ctx)
+        assert "Unknown Salesforce object" in result
+
+    @pytest.mark.asyncio
+    async def test_delete_empty_id(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        ctx = MagicMock()
+        result = await tools["salesforce_delete_record"]("Account", "", ctx)
+        assert "required" in result.lower()
+
+
+class TestSalesforceListObjects:
+    @pytest.mark.asyncio
+    async def test_list_success(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, {
+            "sobjects": [
+                {"name": "Account", "label": "Account", "queryable": True},
+                {"name": "Contact", "label": "Contact", "queryable": True},
+                {"name": "Task", "label": "Task", "queryable": False},
+            ]
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_list_objects"](ctx)
+        assert "Account" in result
+        assert "Contact" in result
+        assert "queryable" in result
+        assert "not queryable" in result
+
+    @pytest.mark.asyncio
+    async def test_list_empty(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, {"sobjects": []})
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_list_objects"](ctx)
+        assert "No objects found" in result
+
+
+class TestSalesforceListReports:
+    @pytest.mark.asyncio
+    async def test_list_success(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, json_data=None)
+        resp.json.return_value = [
+            {"name": "Sales Report", "id": "rpt-001", "reportFormat": "TABULAR"},
+            {"name": "Pipeline Report", "id": "rpt-002", "reportFormat": "SUMMARY"},
+        ]
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_list_reports"](ctx)
+        assert "Sales Report" in result
+        assert "rpt-001" in result
+        assert "TABULAR" in result
+        assert "Pipeline Report" in result
+
+    @pytest.mark.asyncio
+    async def test_list_with_folder(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, json_data=None)
+        resp.json.return_value = [
+            {"name": "Folder Report", "id": "rpt-003", "reportFormat": "MATRIX"},
+        ]
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_list_reports"](ctx, folder_id="folder-001")
+        assert "Folder Report" in result
+
+    @pytest.mark.asyncio
+    async def test_list_empty(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, json_data=None)
+        resp.json.return_value = []
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_list_reports"](ctx)
+        assert "No reports found" in result
+
+
+class TestSalesforceRunReport:
+    @pytest.mark.asyncio
+    async def test_run_success(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, {
+            "attributes": {"reportName": "Q1 Revenue"},
+            "factMap": {
+                "T!T": {
+                    "rows": [
+                        {"dataCells": [{"label": "Acme"}, {"label": "$50,000"}]},
+                        {"dataCells": [{"label": "Globex"}, {"label": "$30,000"}]},
+                    ]
+                }
+            },
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_run_report"]("rpt-001", ctx)
+        assert "Q1 Revenue" in result
+        assert "2 row" in result
+        assert "Acme" in result
+        assert "$50,000" in result
+
+    @pytest.mark.asyncio
+    async def test_run_empty(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, {
+            "attributes": {"reportName": "Empty Report"},
+            "factMap": {"T!T": {"rows": []}},
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_run_report"]("rpt-002", ctx)
+        assert "No data rows" in result
+
+    @pytest.mark.asyncio
+    async def test_run_empty_id(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        ctx = MagicMock()
+        result = await tools["salesforce_run_report"]("", ctx)
+        assert "required" in result.lower()
+
+
+class TestSalesforceListRecent:
+    @pytest.mark.asyncio
+    async def test_list_recent_success(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, json_data=None)
+        resp.json.return_value = [
+            {"attributes": {"type": "Account"}, "Name": "Acme Corp", "Id": "001"},
+            {"attributes": {"type": "Contact"}, "Name": "Jane Doe", "Id": "003"},
+        ]
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_list_recent"](ctx)
+        assert "Acme Corp" in result
+        assert "Jane Doe" in result
+
+    @pytest.mark.asyncio
+    async def test_list_recent_with_type(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, {
+            "records": [
+                {"attributes": {"type": "Account"}, "Name": "Globex", "Id": "002"},
+            ],
+        })
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_list_recent"](ctx, object_type="Account", limit=5)
+        assert "Globex" in result
+
+    @pytest.mark.asyncio
+    async def test_list_recent_empty(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        resp = _mock_response(200, json_data=None)
+        resp.json.return_value = []
+        client = _mock_client(resp)
+        ctx = MagicMock()
+        with _patch_require_service("salesforce", client):
+            result = await tools["salesforce_list_recent"](ctx)
+        assert "No recent records found" in result
+
+    @pytest.mark.asyncio
+    async def test_list_recent_invalid_type(self):
+        from asibot.connectors.salesforce import SalesforceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        SalesforceConnector().register_tools(mcp)
+
+        ctx = MagicMock()
+        result = await tools["salesforce_list_recent"](ctx, object_type="FakeObject")
+        assert "Unknown Salesforce object" in result
+
+
 # --- Zoom Connector Tests ---
 
 

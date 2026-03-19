@@ -173,3 +173,182 @@ class ConcurConnector(Connector):
                 currency = rpt.get("CurrencyCode", "")
                 lines.append(f"{name} (ID: {rid}) | Owner: {owner} | Total: {currency} {total}")
             return "\n".join(lines)
+
+        @mcp.tool()
+        async def concur_create_report(name: str, ctx: Context, policy_id: str = "") -> str:
+            """Create a new expense report in SAP Concur.
+
+            Args:
+                name: Report name
+                policy_id: Optional expense policy ID
+            """
+            err = validation.validate_content(name, "name")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "concur", level="write")
+            if err:
+                return err
+            payload = {"Name": name}
+            if policy_id:
+                payload["PolicyID"] = policy_id
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/expense/reports",
+                service="Concur", action="create report",
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json()
+            rid = data.get("ID", "?")
+            return f"Report created.\nID: {rid}\nName: {name}"
+
+        @mcp.tool()
+        async def concur_create_expense(
+            report_id: str, expense_type: str, amount: float, currency: str, date: str, ctx: Context, description: str = ""
+        ) -> str:
+            """Create an expense entry in a SAP Concur report.
+
+            Args:
+                report_id: The expense report ID
+                expense_type: Expense type (e.g., "Airfare", "Hotel")
+                amount: Transaction amount
+                currency: Currency code (e.g., "USD")
+                date: Transaction date (YYYY-MM-DD)
+                description: Optional description
+            """
+            err = validation.validate_id(report_id, "report_id")
+            if err:
+                return err
+            err = validation.validate_content(expense_type, "expense_type")
+            if err:
+                return err
+            err = validation.validate_date(date, "date")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "concur", level="write")
+            if err:
+                return err
+            payload = {
+                "ReportID": report_id,
+                "ExpenseTypeName": expense_type,
+                "TransactionAmount": amount,
+                "TransactionCurrencyCode": currency,
+                "TransactionDate": date,
+            }
+            if description:
+                payload["Description"] = description
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/expense/entries",
+                service="Concur", action="create expense",
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json()
+            eid = data.get("ID", "?")
+            return f"Expense created.\nID: {eid}\nType: {expense_type}\nAmount: {currency} {amount}\nDate: {date}"
+
+        @mcp.tool()
+        async def concur_submit_report(report_id: str, ctx: Context) -> str:
+            """Submit an expense report for approval in SAP Concur.
+
+            Args:
+                report_id: The expense report ID
+            """
+            err = validation.validate_id(report_id, "report_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "concur", level="write")
+            if err:
+                return err
+            payload = {"Status": "Submitted"}
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{API}/expense/reports/{report_id}",
+                service="Concur", action="submit report",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Report {report_id} submitted for approval."
+
+        @mcp.tool()
+        async def concur_approve_report(report_id: str, ctx: Context, comment: str = "") -> str:
+            """Approve a pending expense report in SAP Concur.
+
+            Args:
+                report_id: The expense report ID
+                comment: Optional approval comment
+            """
+            err = validation.validate_id(report_id, "report_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "concur", level="write")
+            if err:
+                return err
+            payload = {"Status": "Approved"}
+            if comment:
+                payload["Comment"] = comment
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{API}/expense/reports/{report_id}",
+                service="Concur", action="approve report",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Report {report_id} approved."
+
+        @mcp.tool()
+        async def concur_reject_report(report_id: str, ctx: Context, comment: str = "") -> str:
+            """Reject (send back) an expense report in SAP Concur.
+
+            Args:
+                report_id: The expense report ID
+                comment: Optional rejection comment
+            """
+            err = validation.validate_id(report_id, "report_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "concur", level="write")
+            if err:
+                return err
+            payload = {"Status": "SendBack"}
+            if comment:
+                payload["Comment"] = comment
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{API}/expense/reports/{report_id}",
+                service="Concur", action="reject report",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Report {report_id} sent back for revision."
+
+        @mcp.tool()
+        async def concur_add_receipt(expense_id: str, filename: str, content_type: str, ctx: Context) -> str:
+            """Attach a receipt image to an expense entry in SAP Concur.
+
+            Args:
+                expense_id: The expense entry ID
+                filename: Receipt filename
+                content_type: MIME type (e.g., "image/jpeg", "application/pdf")
+            """
+            err = validation.validate_id(expense_id, "expense_id")
+            if err:
+                return err
+            err = validation.validate_content(filename, "filename")
+            if err:
+                return err
+            err = validation.validate_content(content_type, "content_type")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "concur", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/expense/entries/{expense_id}/receipts",
+                service="Concur", action="add receipt",
+                headers={"Content-Type": content_type, "Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+            if err:
+                return err
+            return f"Receipt '{filename}' attached to expense {expense_id}."

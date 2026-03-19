@@ -210,3 +210,262 @@ class SmartsheetConnector(Connector):
             if result_rows:
                 return f"Row added. ID: {result_rows[0].get('id', '?')}"
             return "Row added."
+
+        @mcp.tool()
+        async def smartsheet_update_row(sheet_id: str, row_id: str, cells_json: str, ctx: Context) -> str:
+            """Update cell values in a Smartsheet row.
+
+            Args:
+                sheet_id: The sheet ID
+                row_id: The row ID
+                cells_json: JSON string of cells array, e.g. [{"columnId": 123, "value": "new text"}]
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            err = validation.validate_id(row_id, "row_id")
+            if err:
+                return err
+            err = validation.validate_content(cells_json, "cells_json")
+            if err:
+                return err
+            try:
+                cells = json.loads(cells_json)
+            except (json.JSONDecodeError, TypeError):
+                return "Invalid cells_json: must be valid JSON."
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PUT", f"{API}/sheets/{sheet_id}/rows",
+                service="Smartsheet", action="update row",
+                json=[{"id": row_id, "cells": cells}],
+            )
+            if err:
+                return err
+            return f"Row {row_id} updated."
+
+        @mcp.tool()
+        async def smartsheet_delete_row(sheet_id: str, row_id: str, ctx: Context) -> str:
+            """Delete a row from a Smartsheet sheet.
+
+            Args:
+                sheet_id: The sheet ID
+                row_id: The row ID
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            err = validation.validate_id(row_id, "row_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"{API}/sheets/{sheet_id}/rows",
+                service="Smartsheet", action="delete row",
+                params={"ids": row_id},
+            )
+            if err:
+                return err
+            return f"Row {row_id} deleted."
+
+        @mcp.tool()
+        async def smartsheet_create_sheet(name: str, columns_json: str, ctx: Context) -> str:
+            """Create a new Smartsheet sheet with column definitions.
+
+            Args:
+                name: Sheet name
+                columns_json: JSON string of columns array, e.g. [{"title": "Name", "type": "TEXT_NUMBER", "primary": true}]
+            """
+            err = validation.validate_content(name, "name")
+            if err:
+                return err
+            err = validation.validate_content(columns_json, "columns_json")
+            if err:
+                return err
+            try:
+                columns = json.loads(columns_json)
+            except (json.JSONDecodeError, TypeError):
+                return "Invalid columns_json: must be valid JSON."
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/sheets",
+                service="Smartsheet", action="create sheet",
+                json={"name": name, "columns": columns},
+            )
+            if err:
+                return err
+            data = r.json()
+            result = data.get("result", {})
+            return f"Sheet created. ID: {result.get('id', '?')} | Name: {result.get('name', name)}"
+
+        @mcp.tool()
+        async def smartsheet_add_column(sheet_id: str, title: str, column_type: str, ctx: Context, options: str = "") -> str:
+            """Add a column to a Smartsheet sheet.
+
+            Args:
+                sheet_id: The sheet ID
+                title: Column title
+                column_type: Column type (TEXT_NUMBER, PICKLIST, DATE, CONTACT_LIST, CHECKBOX)
+                options: Comma-separated options for PICKLIST type — optional
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            err = validation.validate_content(title, "title")
+            if err:
+                return err
+            err = validation.validate_content(column_type, "column_type")
+            if err:
+                return err
+            col_def: dict = {"title": title, "type": column_type}
+            if options:
+                col_def["options"] = [o.strip() for o in options.split(",") if o.strip()]
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/sheets/{sheet_id}/columns",
+                service="Smartsheet", action="add column",
+                json=col_def,
+            )
+            if err:
+                return err
+            data = r.json()
+            result = data.get("result", {})
+            return f"Column added. ID: {result.get('id', '?')} | Title: {result.get('title', title)}"
+
+        @mcp.tool()
+        async def smartsheet_update_column(sheet_id: str, column_id: str, ctx: Context, title: str = "", column_type: str = "") -> str:
+            """Update a column in a Smartsheet sheet.
+
+            Args:
+                sheet_id: The sheet ID
+                column_id: The column ID
+                title: New column title — optional
+                column_type: New column type — optional
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            err = validation.validate_id(column_id, "column_id")
+            if err:
+                return err
+            update: dict = {}
+            if title:
+                update["title"] = title
+            if column_type:
+                update["type"] = column_type
+            if not update:
+                return "No fields to update. Provide at least title or column_type."
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PUT", f"{API}/sheets/{sheet_id}/columns/{column_id}",
+                service="Smartsheet", action="update column",
+                json=update,
+            )
+            if err:
+                return err
+            data = r.json()
+            result = data.get("result", {})
+            return f"Column {column_id} updated. Title: {result.get('title', '?')}"
+
+        @mcp.tool()
+        async def smartsheet_add_comment(sheet_id: str, row_id: str, text: str, ctx: Context) -> str:
+            """Add a comment to a Smartsheet row.
+
+            Args:
+                sheet_id: The sheet ID
+                row_id: The row ID
+                text: Comment text
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            err = validation.validate_id(row_id, "row_id")
+            if err:
+                return err
+            err = validation.validate_content(text, "text")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/sheets/{sheet_id}/rows/{row_id}/discussions",
+                service="Smartsheet", action="add comment",
+                json={"comment": {"text": text}},
+            )
+            if err:
+                return err
+            return f"Comment added to row {row_id}."
+
+        @mcp.tool()
+        async def smartsheet_list_attachments(sheet_id: str, row_id: str, ctx: Context) -> str:
+            """List attachments on a Smartsheet row.
+
+            Args:
+                sheet_id: The sheet ID
+                row_id: The row ID
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            err = validation.validate_id(row_id, "row_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/sheets/{sheet_id}/rows/{row_id}/attachments",
+                service="Smartsheet", action="list attachments",
+            )
+            if err:
+                return err
+            attachments = r.json().get("data", [])
+            if not attachments:
+                return "No attachments found."
+            lines = []
+            for a in attachments:
+                lines.append(
+                    f"{a.get('name', '?')}\n"
+                    f"  ID: {a.get('id', '?')} | Type: {a.get('mimeType', '?')} | Size: {a.get('sizeInKb', '?')} KB"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def smartsheet_share_sheet(sheet_id: str, email: str, access_level: str, ctx: Context) -> str:
+            """Share a Smartsheet sheet with a user.
+
+            Args:
+                sheet_id: The sheet ID
+                email: Email address to share with
+                access_level: Access level (VIEWER, EDITOR, EDITOR_SHARE, ADMIN)
+            """
+            err = validation.validate_id(sheet_id, "sheet_id")
+            if err:
+                return err
+            err = validation.validate_email_address(email)
+            if err:
+                return err
+            valid_levels = {"VIEWER", "EDITOR", "EDITOR_SHARE", "ADMIN"}
+            if access_level not in valid_levels:
+                return f"Invalid access_level: '{access_level}'. Allowed: {', '.join(sorted(valid_levels))}"
+            client, uid, err = await token_store.require_service(ctx, "smartsheet", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/sheets/{sheet_id}/shares",
+                service="Smartsheet", action="share sheet",
+                json={"email": email, "accessLevel": access_level},
+            )
+            if err:
+                return err
+            return f"Sheet {sheet_id} shared with {email} as {access_level}."

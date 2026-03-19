@@ -247,6 +247,320 @@ class OutlookConnector(Connector):
             return "\n\n".join(lines)
 
         @mcp.tool()
+        async def outlook_move_email(message_id: str, destination_folder: str, ctx: Context) -> str:
+            """Move an email to a different folder (e.g., "Archive", or a folder ID).
+
+            Args:
+                message_id: The email message ID
+                destination_folder: Destination folder name or ID (e.g. "Archive", "Inbox", or a folder ID)
+            """
+            err = validation.validate_id(message_id, "message_id")
+            if err:
+                return err
+            err = validation.validate_content(destination_folder, "destination_folder")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{GRAPH}/me/messages/{message_id}/move",
+                service="Outlook", action="move email",
+                json={"destinationId": destination_folder},
+            )
+            if err:
+                return err
+            return f"Email moved to {destination_folder}."
+
+        @mcp.tool()
+        async def outlook_delete_email(message_id: str, ctx: Context) -> str:
+            """Delete an email (moves to Deleted Items).
+
+            Args:
+                message_id: The email message ID
+            """
+            err = validation.validate_id(message_id, "message_id")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"{GRAPH}/me/messages/{message_id}",
+                service="Outlook", action="delete email",
+            )
+            if err:
+                return err
+            return "Email deleted."
+
+        @mcp.tool()
+        async def outlook_mark_read(message_id: str, ctx: Context, is_read: bool = True) -> str:
+            """Mark an email as read or unread.
+
+            Args:
+                message_id: The email message ID
+                is_read: True to mark as read, False to mark as unread (default: True)
+            """
+            err = validation.validate_id(message_id, "message_id")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{GRAPH}/me/messages/{message_id}",
+                service="Outlook", action="mark read",
+                json={"isRead": is_read},
+            )
+            if err:
+                return err
+            status = "read" if is_read else "unread"
+            return f"Email marked as {status}."
+
+        @mcp.tool()
+        async def outlook_reply_email(message_id: str, body: str, ctx: Context, reply_all: bool = False) -> str:
+            """Reply to an email.
+
+            Args:
+                message_id: The email message ID to reply to
+                body: Reply body (plain text)
+                reply_all: If True, reply to all recipients (default: False)
+            """
+            err = validation.validate_id(message_id, "message_id")
+            if err:
+                return err
+            err = validation.validate_content(body, "body")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "write")
+            if err:
+                return err
+            action = "replyAll" if reply_all else "reply"
+            r, err = await token_store.safe_request(
+                client, "POST", f"{GRAPH}/me/messages/{message_id}/{action}",
+                service="Outlook", action=f"{action} email",
+                json={"comment": body},
+            )
+            if err:
+                return err
+            kind = "Reply-all" if reply_all else "Reply"
+            return f"{kind} sent."
+
+        @mcp.tool()
+        async def outlook_forward_email(message_id: str, to_recipients: str, ctx: Context, body: str = "") -> str:
+            """Forward an email to one or more recipients.
+
+            Args:
+                message_id: The email message ID to forward
+                to_recipients: Comma-separated recipient email addresses
+                body: Optional comment to include with the forwarded email
+            """
+            err = validation.validate_id(message_id, "message_id")
+            if err:
+                return err
+            err = validation.validate_content(to_recipients, "to_recipients")
+            if err:
+                return err
+            emails = [e.strip() for e in to_recipients.split(",") if e.strip()]
+            for email in emails:
+                err = validation.validate_email_address(email)
+                if err:
+                    return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "write")
+            if err:
+                return err
+            payload: dict = {
+                "toRecipients": [{"emailAddress": {"address": e}} for e in emails],
+            }
+            if body:
+                payload["comment"] = body
+            r, err = await token_store.safe_request(
+                client, "POST", f"{GRAPH}/me/messages/{message_id}/forward",
+                service="Outlook", action="forward email",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Email forwarded to {', '.join(emails)}."
+
+        @mcp.tool()
+        async def outlook_list_contacts(ctx: Context, search: str = "", limit: int = 10) -> str:
+            """List or search your Outlook contacts.
+
+            Args:
+                search: Optional search query to filter contacts
+                limit: Max results (default: 10)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "read")
+            if err:
+                return err
+            params: dict = {"$top": min(limit, 50), "$select": "displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones"}
+            if search:
+                err = validation.validate_query(search, "search")
+                if err:
+                    return err
+                params["$filter"] = f"startswith(displayName,'{search}') or startswith(givenName,'{search}') or startswith(surname,'{search}')"
+            pages = paginate_odata(
+                client, f"{GRAPH}/me/contacts",
+                service="Outlook", action="list contacts",
+                params=params,
+            )
+            contacts = await collect(pages, limit)
+            if not contacts:
+                return "No contacts found."
+            lines = []
+            for c in contacts:
+                emails = [e.get("address", "") for e in c.get("emailAddresses", [])]
+                email_str = ", ".join(emails) if emails else "No email"
+                phone = c.get("mobilePhone") or (c.get("businessPhones", [None]) or [None])[0] or ""
+                phone_str = f"\n  Phone: {phone}" if phone else ""
+                lines.append(
+                    f"{c.get('displayName', '?')}\n"
+                    f"  Email: {email_str}{phone_str}\n"
+                    f"  ID: {c.get('id', '')}"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def outlook_get_contact(contact_id: str, ctx: Context) -> str:
+            """Get details for a specific contact.
+
+            Args:
+                contact_id: The contact ID
+            """
+            err = validation.validate_id(contact_id, "contact_id")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{GRAPH}/me/contacts/{contact_id}",
+                service="Outlook", action="get contact",
+            )
+            if err:
+                return err
+            c = r.json()
+            emails = [e.get("address", "") for e in c.get("emailAddresses", [])]
+            email_str = ", ".join(emails) if emails else "No email"
+            phone = c.get("mobilePhone") or ""
+            biz_phones = c.get("businessPhones", [])
+            phone_str = f"\n  Mobile: {phone}" if phone else ""
+            biz_str = f"\n  Business: {', '.join(biz_phones)}" if biz_phones else ""
+            company = c.get("companyName", "")
+            company_str = f"\n  Company: {company}" if company else ""
+            title = c.get("jobTitle", "")
+            title_str = f"\n  Title: {title}" if title else ""
+            return (
+                f"{c.get('displayName', '?')}\n"
+                f"  Given name: {c.get('givenName', '')}\n"
+                f"  Surname: {c.get('surname', '')}\n"
+                f"  Email: {email_str}{phone_str}{biz_str}{company_str}{title_str}\n"
+                f"  ID: {c.get('id', '')}"
+            )
+
+        @mcp.tool()
+        async def outlook_create_contact(given_name: str, surname: str, ctx: Context, email: str = "", phone: str = "") -> str:
+            """Create a new contact in your Outlook address book.
+
+            Args:
+                given_name: Contact's first name
+                surname: Contact's last name
+                email: Optional email address
+                phone: Optional phone number
+            """
+            err = validation.validate_content(given_name, "given_name")
+            if err:
+                return err
+            err = validation.validate_content(surname, "surname")
+            if err:
+                return err
+            if email:
+                err = validation.validate_email_address(email)
+                if err:
+                    return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "outlook", "write")
+            if err:
+                return err
+            contact: dict = {"givenName": given_name, "surname": surname}
+            if email:
+                contact["emailAddresses"] = [{"address": email}]
+            if phone:
+                contact["mobilePhone"] = phone
+            r, err = await token_store.safe_request(
+                client, "POST", f"{GRAPH}/me/contacts",
+                service="Outlook", action="create contact",
+                json=contact,
+            )
+            if err:
+                return err
+            created = r.json()
+            return f"Contact created: {created.get('displayName', f'{given_name} {surname}')}\n  ID: {created.get('id', '?')}"
+
+        @mcp.tool()
+        async def calendar_update_event(event_id: str, ctx: Context, subject: str = "", start: str = "", end: str = "", location: str = "") -> str:
+            """Update a calendar event. Only provided fields are changed.
+
+            Args:
+                event_id: The event ID
+                subject: New subject/title (optional)
+                start: New start datetime in ISO format (optional)
+                end: New end datetime in ISO format (optional)
+                location: New location (optional)
+            """
+            err = validation.validate_id(event_id, "event_id")
+            if err:
+                return err
+            updates: dict = {}
+            if subject:
+                err = validation.validate_content(subject, "subject")
+                if err:
+                    return err
+                updates["subject"] = subject
+            if start:
+                updates["start"] = {"dateTime": start, "timeZone": "UTC"}
+            if end:
+                updates["end"] = {"dateTime": end, "timeZone": "UTC"}
+            if location:
+                updates["location"] = {"displayName": location}
+            if not updates:
+                return "No updates provided. Specify at least one of: subject, start, end, location."
+            client, uid, err = await microsoft.require_graph_client(ctx, "calendar", "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{GRAPH}/me/events/{event_id}",
+                service="Calendar", action="update event",
+                json=updates,
+            )
+            if err:
+                return err
+            updated = r.json()
+            return f"Event updated: {updated.get('subject', subject or '?')}\n  ID: {updated.get('id', event_id)}"
+
+        @mcp.tool()
+        async def calendar_delete_event(event_id: str, ctx: Context) -> str:
+            """Delete a calendar event.
+
+            Args:
+                event_id: The event ID
+            """
+            err = validation.validate_id(event_id, "event_id")
+            if err:
+                return err
+            client, uid, err = await microsoft.require_graph_client(ctx, "calendar", "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"{GRAPH}/me/events/{event_id}",
+                service="Calendar", action="delete event",
+            )
+            if err:
+                return err
+            return "Event deleted."
+
+        @mcp.tool()
         async def calendar_events(ctx: Context, days: int = 7) -> str:
             """Get your upcoming calendar events.
 

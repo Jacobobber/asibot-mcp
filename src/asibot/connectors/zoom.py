@@ -279,3 +279,215 @@ class ZoomConnector(Connector):
                 if f.get("file_type") == "TRANSCRIPT" or f.get("file_extension") == "VTT":
                     return f"Transcript download URL: {f.get('download_url', 'N/A')}"
             return "No VTT transcript found for this meeting."
+
+        @mcp.tool()
+        async def zoom_create_meeting(ctx: Context, topic: str, start_time: str, duration: int = 60, timezone: str = "UTC", agenda: str = "") -> str:
+            """Schedule a new Zoom meeting.
+
+            Args:
+                topic: Meeting topic/title
+                start_time: Start time in ISO 8601 format (e.g. 2024-06-01T10:00:00Z)
+                duration: Duration in minutes (default: 60)
+                timezone: Timezone (default: UTC)
+                agenda: Meeting agenda (optional)
+            """
+            err = validation.validate_content(topic, "topic")
+            if err:
+                return err
+            err = validation.validate_content(start_time, "start_time")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "zoom")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            body: dict = {
+                "topic": topic,
+                "type": 2,
+                "start_time": start_time,
+                "duration": duration,
+                "timezone": timezone,
+            }
+            if agenda:
+                body["agenda"] = agenda
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/users/me/meetings",
+                service="Zoom", action="create meeting",
+                headers={"Authorization": f"Bearer {token}"},
+                json=body,
+            )
+            if err:
+                return err
+            m = r.json()
+            return (
+                f"Meeting created successfully.\n"
+                f"Topic: {m.get('topic', '?')}\n"
+                f"ID: {m.get('id', '?')}\n"
+                f"Start: {m.get('start_time', '?')}\n"
+                f"Duration: {m.get('duration', '?')} min\n"
+                f"Join URL: {m.get('join_url', '?')}"
+            )
+
+        @mcp.tool()
+        async def zoom_update_meeting(meeting_id: int, ctx: Context, topic: str = "", start_time: str = "", duration: int = 0) -> str:
+            """Update an existing Zoom meeting.
+
+            Args:
+                meeting_id: The Zoom meeting ID
+                topic: New topic (optional)
+                start_time: New start time in ISO 8601 format (optional)
+                duration: New duration in minutes (optional, 0 = no change)
+            """
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "zoom")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            body: dict = {}
+            if topic:
+                body["topic"] = topic
+            if start_time:
+                body["start_time"] = start_time
+            if duration:
+                body["duration"] = duration
+            if not body:
+                return "No fields to update. Provide at least one of: topic, start_time, duration."
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{API}/meetings/{meeting_id}",
+                service="Zoom", action="update meeting",
+                headers={"Authorization": f"Bearer {token}"},
+                json=body,
+            )
+            if err:
+                return err
+            return f"Meeting {meeting_id} updated successfully."
+
+        @mcp.tool()
+        async def zoom_delete_meeting(meeting_id: int, ctx: Context) -> str:
+            """Cancel/delete a Zoom meeting.
+
+            Args:
+                meeting_id: The Zoom meeting ID
+            """
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "zoom")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"{API}/meetings/{meeting_id}",
+                service="Zoom", action="delete meeting",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if err:
+                return err
+            return f"Meeting {meeting_id} deleted successfully."
+
+        @mcp.tool()
+        async def zoom_get_meeting_registrants(meeting_id: int, ctx: Context) -> str:
+            """List registrants for a Zoom meeting.
+
+            Args:
+                meeting_id: The Zoom meeting ID
+            """
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "zoom")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/meetings/{meeting_id}/registrants",
+                service="Zoom", action="list registrants",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if err:
+                return err
+            registrants = r.json().get("registrants", [])
+            if not registrants:
+                return "No registrants found."
+            return "\n".join(
+                f"{reg.get('first_name', '')} {reg.get('last_name', '')} | Email: {reg.get('email', '?')} | Status: {reg.get('status', '?')}"
+                for reg in registrants
+            )
+
+        @mcp.tool()
+        async def zoom_list_users(ctx: Context, status: str = "active", limit: int = 30) -> str:
+            """List users in the Zoom account.
+
+            Args:
+                status: User status filter (active, inactive, pending). Default: active.
+                limit: Max results (default: 30)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "zoom")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/users",
+                service="Zoom", action="list users",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"status": status, "page_size": min(limit, 100)},
+            )
+            if err:
+                return err
+            users = r.json().get("users", [])
+            if not users:
+                return "No users found."
+            return "\n".join(
+                f"{u.get('first_name', '')} {u.get('last_name', '')} | Email: {u.get('email', '?')} | Type: {u.get('type', '?')} | Status: {u.get('status', '?')}"
+                for u in users
+            )
+
+        @mcp.tool()
+        async def zoom_get_user(user_id: str, ctx: Context) -> str:
+            """Get details of a Zoom user.
+
+            Args:
+                user_id: The user ID or email address
+            """
+            err = validation.validate_id(user_id, "user_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "zoom", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "zoom")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Zoom", "authenticate", e)
+            encoded_id = urllib.parse.quote(user_id, safe="")
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/users/{encoded_id}",
+                service="Zoom", action="get user",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if err:
+                return err
+            u = r.json()
+            return (
+                f"{u.get('first_name', '')} {u.get('last_name', '')}\n"
+                f"Email: {u.get('email', '?')}\n"
+                f"Type: {u.get('type', '?')}\n"
+                f"Status: {u.get('status', '?')}\n"
+                f"PMI: {u.get('pmi', '?')}\n"
+                f"Timezone: {u.get('timezone', '?')}"
+            )

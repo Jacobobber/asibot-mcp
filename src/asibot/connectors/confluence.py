@@ -69,14 +69,17 @@ class ConfluenceConnector(Connector):
             if err:
                 return err
             cql = f'text ~ "{_escape_cql_value(query)}"'
-            r, err = await token_store.safe_request(
-                client, "GET", "/content/search",
+            pages = paginate_offset(
+                client, "/content/search",
                 service="Confluence", action="search",
-                params={"cql": cql, "expand": "space", "limit": min(limit, 100)},
+                params={"cql": cql, "expand": "space"},
+                results_key="results",
+                page_size_param="limit",
+                offset_param="start",
+                offset_start=0,
+                page_size=min(limit, 100),
             )
-            if err:
-                return err
-            results = r.json().get("results", [])
+            results = await collect(pages, limit)
             if not results:
                 return "No pages found."
             lines = []
@@ -272,3 +275,229 @@ class ConfluenceConnector(Connector):
                 return err
             data = r.json()
             return f"Page created. ID: {data.get('id', '?')} | Title: {data.get('title', '?')}"
+
+        @mcp.tool()
+        async def confluence_update_page(page_id: str, title: str, body: str, version_number: int, ctx: Context) -> str:
+            """Update an existing Confluence page.
+
+            Args:
+                page_id: Page ID
+                title: New page title
+                body: New page body (Confluence storage format HTML)
+                version_number: Current version number (will be incremented)
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            err = validation.validate_content(title, "title")
+            if err:
+                return err
+            err = validation.validate_content(body, "body")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", _make_client, "write")
+            if err:
+                return err
+            payload = {
+                "type": "page",
+                "title": title,
+                "version": {"number": version_number + 1},
+                "body": {"storage": {"value": body, "representation": "storage"}},
+            }
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/content/{page_id}",
+                service="Confluence", action="update page",
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json()
+            return f"Page updated. ID: {data.get('id', '?')} | Title: {data.get('title', '?')} | Version: {data.get('version', {}).get('number', '?')}"
+
+        @mcp.tool()
+        async def confluence_add_comment(page_id: str, body: str, ctx: Context) -> str:
+            """Add a comment to a Confluence page.
+
+            Args:
+                page_id: Page ID
+                body: Comment body (Confluence storage format HTML)
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            err = validation.validate_content(body, "body")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", _make_client, "write")
+            if err:
+                return err
+            payload = {
+                "type": "comment",
+                "container": {"id": page_id, "type": "page"},
+                "body": {"storage": {"value": body, "representation": "storage"}},
+            }
+            r, err = await token_store.safe_request(
+                client, "POST", "/content",
+                service="Confluence", action="add comment",
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json()
+            return f"Comment added to page {page_id}. Comment ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def confluence_add_label(page_id: str, label: str, ctx: Context) -> str:
+            """Add a label to a Confluence page.
+
+            Args:
+                page_id: Page ID
+                label: Label to add
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            err = validation.validate_content(label, "label")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", _make_client, "write")
+            if err:
+                return err
+            payload = [{"prefix": "global", "name": label}]
+            r, err = await token_store.safe_request(
+                client, "POST", f"/content/{page_id}/label",
+                service="Confluence", action="add label",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Label '{label}' added to page {page_id}."
+
+        @mcp.tool()
+        async def confluence_remove_label(page_id: str, label: str, ctx: Context) -> str:
+            """Remove a label from a Confluence page.
+
+            Args:
+                page_id: Page ID
+                label: Label to remove
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            err = validation.validate_content(label, "label")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", _make_client, "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"/content/{page_id}/label/{label}",
+                service="Confluence", action="remove label",
+            )
+            if err:
+                return err
+            return f"Label '{label}' removed from page {page_id}."
+
+        @mcp.tool()
+        async def confluence_delete_page(page_id: str, ctx: Context) -> str:
+            """Delete a Confluence page.
+
+            Args:
+                page_id: Page ID
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", _make_client, "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"/content/{page_id}",
+                service="Confluence", action="delete page",
+            )
+            if err:
+                return err
+            return f"Page {page_id} deleted."
+
+        @mcp.tool()
+        async def confluence_move_page(page_id: str, target_parent_id: str, ctx: Context) -> str:
+            """Move a Confluence page under a new parent.
+
+            Args:
+                page_id: Page ID to move
+                target_parent_id: Target parent page ID
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            err = validation.validate_id(target_parent_id, "target_parent_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", _make_client, "write")
+            if err:
+                return err
+            # First get the current page to obtain title and version
+            r, err = await token_store.safe_request(
+                client, "GET", f"/content/{page_id}",
+                service="Confluence", action="get page for move",
+                params={"expand": "version,ancestors"},
+            )
+            if err:
+                return err
+            page = r.json()
+            current_version = (page.get("version") or {}).get("number", 0)
+            title = page.get("title", "")
+            payload = {
+                "type": "page",
+                "title": title,
+                "version": {"number": current_version + 1},
+                "ancestors": [{"id": target_parent_id}],
+            }
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/content/{page_id}",
+                service="Confluence", action="move page",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Page {page_id} moved under parent {target_parent_id}."
+
+        @mcp.tool()
+        async def confluence_upload_attachment(page_id: str, filename: str, content: str, ctx: Context) -> str:
+            """Upload an attachment to a Confluence page.
+
+            Args:
+                page_id: Page ID
+                filename: Filename for the attachment
+                content: Base64-encoded file content
+            """
+            import base64 as _base64
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            err = validation.validate_content(filename, "filename")
+            if err:
+                return err
+            err = validation.validate_content(content, "content")
+            if err:
+                return err
+            try:
+                file_bytes = _base64.b64decode(content)
+            except Exception:
+                return "Invalid content: must be valid base64-encoded data."
+            client, uid, err = await token_store.require_service(ctx, "atlassian", _make_client, "write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"/content/{page_id}/child/attachment",
+                service="Confluence", action="upload attachment",
+                headers={"X-Atlassian-Token": "nocheck"},
+                files={"file": (filename, file_bytes)},
+            )
+            if err:
+                return err
+            results = r.json().get("results", [])
+            if results:
+                att = results[0]
+                return f"Attachment uploaded. ID: {att.get('id', '?')} | Filename: {att.get('title', '?')}"
+            return f"Attachment '{filename}' uploaded to page {page_id}."

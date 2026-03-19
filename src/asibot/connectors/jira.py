@@ -244,90 +244,277 @@ class JiraConnector(Connector):
             return f"Comment added to {issue_key}."
 
         @mcp.tool()
-        async def jira_list_sprints(board_id: str, ctx: Context, state: str = "active") -> str:
-            """List sprints for a Jira board.
-
-            Args:
-                board_id: The Jira board ID
-                state: Sprint state filter: active, closed, or future (default: active)
-            """
-            err = validation.validate_id(board_id, "board_id")
-            if err:
-                return err
-            if state not in _JIRA_SPRINT_STATES:
-                return f"Invalid state: '{state}'. Allowed: {', '.join(sorted(_JIRA_SPRINT_STATES))}"
-            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
-            if err:
-                return err
-            domain = token_store.get_credentials(uid, "atlassian").get("domain", "")
-            url = f"https://{domain}/rest/agile/1.0/board/{board_id}/sprint"
-            r, err = await token_store.safe_request(
-                client, "GET", url,
-                service="Jira", action="list sprints",
-                params={"state": state},
-            )
-            if err:
-                return err
-            sprints = r.json().get("values", [])
-            if not sprints:
-                return f"No {state} sprints found."
-            lines = []
-            for s in sprints:
-                lines.append(
-                    f"{s.get('name', '?')} (ID: {s.get('id', '?')})\n"
-                    f"  State: {s.get('state', '?')} | Start: {s.get('startDate', '?')} | End: {s.get('endDate', '?')}"
-                )
-            return "\n\n".join(lines)
-
-        @mcp.tool()
-        async def jira_list_transitions(issue_key: str, ctx: Context) -> str:
-            """List available transitions for a Jira issue.
+        async def jira_update_issue(issue_key: str, fields: str, ctx: Context) -> str:
+            """Update fields on a Jira issue.
 
             Args:
                 issue_key: Issue key (e.g., "PROJ-123")
+                fields: JSON string of fields to update (e.g., '{"summary": "New title", "priority": {"name": "High"}}')
             """
+            import json as _json
             err = validation.validate_issue_key(issue_key)
             if err:
                 return err
-            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
+            err = validation.validate_content(fields, "fields")
+            if err:
+                return err
+            try:
+                fields_dict = _json.loads(fields)
+            except (ValueError, TypeError):
+                return "Invalid fields: must be a valid JSON string."
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="write")
             if err:
                 return err
             r, err = await token_store.safe_request(
-                client, "GET", f"/issue/{issue_key}/transitions",
-                service="Jira", action="list transitions",
+                client, "PUT", f"/issue/{issue_key}",
+                service="Jira", action="update issue",
+                json={"fields": fields_dict},
             )
             if err:
                 return err
-            transitions = r.json().get("transitions", [])
-            if not transitions:
-                return f"No transitions available for {issue_key}."
-            return "\n".join(
-                f"ID: {t.get('id', '?')} | {t.get('name', '?')}"
-                for t in transitions
-            )
+            return f"Updated {issue_key}."
 
         @mcp.tool()
-        async def jira_transition_issue(issue_key: str, transition_id: str, ctx: Context) -> str:
-            """Transition a Jira issue to a new status.
+        async def jira_create_subtask(parent_key: str, project_key: str, summary: str, ctx: Context, description: str = "") -> str:
+            """Create a subtask under a parent Jira issue.
 
             Args:
-                issue_key: Issue key (e.g., "PROJ-123")
-                transition_id: The transition ID (from jira_list_transitions)
+                parent_key: Parent issue key (e.g., "PROJ-123")
+                project_key: Project key (e.g., "PROJ")
+                summary: Subtask summary/title
+                description: Subtask description (optional)
             """
-            err = validation.validate_issue_key(issue_key)
+            err = validation.validate_issue_key(parent_key)
             if err:
                 return err
-            err = validation.validate_id(transition_id, "transition_id")
+            err = validation.validate_project_key(project_key)
+            if err:
+                return err
+            err = validation.validate_content(summary, "summary")
             if err:
                 return err
             client, uid, err = await token_store.require_service(ctx, "atlassian", level="write")
             if err:
                 return err
+            payload = {
+                "fields": {
+                    "project": {"key": project_key},
+                    "parent": {"key": parent_key},
+                    "summary": summary,
+                    "issuetype": {"name": "Sub-task"},
+                }
+            }
+            if description:
+                payload["fields"]["description"] = {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
+                }
             r, err = await token_store.safe_request(
-                client, "POST", f"/issue/{issue_key}/transitions",
-                service="Jira", action="transition issue",
-                json={"transition": {"id": transition_id}},
+                client, "POST", "/issue",
+                service="Jira", action="create subtask",
+                json=payload,
             )
             if err:
                 return err
-            return f"Transitioned {issue_key} with transition {transition_id}."
+            i = r.json()
+            return f"Created subtask {i['key']}: {summary} (parent: {parent_key})"
+
+        @mcp.tool()
+        async def jira_link_issues(inward_key: str, outward_key: str, link_type: str, ctx: Context) -> str:
+            """Link two Jira issues.
+
+            Args:
+                inward_key: Inward issue key (e.g., "PROJ-123")
+                outward_key: Outward issue key (e.g., "PROJ-456")
+                link_type: Link type name (e.g., "Blocks", "Duplicate", "Relates")
+            """
+            err = validation.validate_issue_key(inward_key)
+            if err:
+                return err
+            err = validation.validate_issue_key(outward_key)
+            if err:
+                return err
+            err = validation.validate_content(link_type, "link_type")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="write")
+            if err:
+                return err
+            payload = {
+                "type": {"name": link_type},
+                "inwardIssue": {"key": inward_key},
+                "outwardIssue": {"key": outward_key},
+            }
+            r, err = await token_store.safe_request(
+                client, "POST", "/issueLink",
+                service="Jira", action="link issues",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Linked {inward_key} -> {outward_key} ({link_type})."
+
+        @mcp.tool()
+        async def jira_add_label(issue_key: str, label: str, ctx: Context) -> str:
+            """Add a label to a Jira issue.
+
+            Args:
+                issue_key: Issue key (e.g., "PROJ-123")
+                label: Label to add
+            """
+            err = validation.validate_issue_key(issue_key)
+            if err:
+                return err
+            err = validation.validate_content(label, "label")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="write")
+            if err:
+                return err
+            payload = {
+                "update": {
+                    "labels": [{"add": label}],
+                }
+            }
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/issue/{issue_key}",
+                service="Jira", action="add label",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Label '{label}' added to {issue_key}."
+
+        @mcp.tool()
+        async def jira_remove_label(issue_key: str, label: str, ctx: Context) -> str:
+            """Remove a label from a Jira issue.
+
+            Args:
+                issue_key: Issue key (e.g., "PROJ-123")
+                label: Label to remove
+            """
+            err = validation.validate_issue_key(issue_key)
+            if err:
+                return err
+            err = validation.validate_content(label, "label")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="write")
+            if err:
+                return err
+            payload = {
+                "update": {
+                    "labels": [{"remove": label}],
+                }
+            }
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/issue/{issue_key}",
+                service="Jira", action="remove label",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Label '{label}' removed from {issue_key}."
+
+        @mcp.tool()
+        async def jira_assign_issue(issue_key: str, assignee: str, ctx: Context) -> str:
+            """Assign a Jira issue to a user.
+
+            Args:
+                issue_key: Issue key (e.g., "PROJ-123")
+                assignee: Assignee email address or account ID
+            """
+            err = validation.validate_issue_key(issue_key)
+            if err:
+                return err
+            err = validation.validate_content(assignee, "assignee")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="write")
+            if err:
+                return err
+            # If it looks like an email, use emailAddress; otherwise treat as accountId
+            if "@" in assignee:
+                payload = {"fields": {"assignee": {"emailAddress": assignee}}}
+            else:
+                payload = {"fields": {"assignee": {"accountId": assignee}}}
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/issue/{issue_key}",
+                service="Jira", action="assign issue",
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Assigned {issue_key} to {assignee}."
+
+        @mcp.tool()
+        async def jira_list_boards(ctx: Context, project_key: str = "") -> str:
+            """List Scrum/Kanban boards, optionally filtered by project.
+
+            Args:
+                project_key: Project key to filter boards (optional)
+            """
+            if project_key:
+                err = validation.validate_project_key(project_key)
+                if err:
+                    return err
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
+            if err:
+                return err
+            domain = token_store.get_credentials(uid, "atlassian").get("domain", "")
+            url = f"https://{domain}/rest/agile/1.0/board"
+            params = {}
+            if project_key:
+                params["projectKeyOrId"] = project_key
+            r, err = await token_store.safe_request(
+                client, "GET", url,
+                service="Jira", action="list boards",
+                params=params,
+            )
+            if err:
+                return err
+            boards = r.json().get("values", [])
+            if not boards:
+                return "No boards found."
+            lines = []
+            for b in boards:
+                btype = b.get("type", "?")
+                lines.append(f"{b.get('name', '?')} (ID: {b.get('id', '?')})\n  Type: {btype}")
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def jira_get_sprint_issues(sprint_id: str, ctx: Context, limit: int = 50) -> str:
+            """Get issues in a Jira sprint.
+
+            Args:
+                sprint_id: The sprint ID
+                limit: Max results (default: 50)
+            """
+            err = validation.validate_id(sprint_id, "sprint_id")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "atlassian", level="read")
+            if err:
+                return err
+            domain = token_store.get_credentials(uid, "atlassian").get("domain", "")
+            url = f"https://{domain}/rest/agile/1.0/sprint/{sprint_id}/issue"
+            r, err = await token_store.safe_request(
+                client, "GET", url,
+                service="Jira", action="get sprint issues",
+                params={"maxResults": min(limit, 100), "fields": "summary,status,assignee,priority"},
+            )
+            if err:
+                return err
+            issues = r.json().get("issues", [])
+            if not issues:
+                return "No issues found in this sprint."
+            lines = []
+            for i in issues:
+                f = i.get("fields", {})
+                assignee = (f.get("assignee") or {}).get("displayName", "Unassigned")
+                status = (f.get("status") or {}).get("name", "?")
+                priority = (f.get("priority") or {}).get("name", "?")
+                lines.append(f"{i['key']}: {f.get('summary', '?')}\n  Status: {status} | Priority: {priority} | Assignee: {assignee}")
+            return "\n\n".join(lines)

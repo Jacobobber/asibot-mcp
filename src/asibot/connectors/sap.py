@@ -254,3 +254,244 @@ class SAPConnector(Connector):
                 quantity = sl.get("OrderQuantity", sl.get("ScheduleLineOrderQuantity", "?"))
                 lines.append(f"Item {item} / Line {schedule} | Delivery: {delivery_date} | Qty: {quantity}")
             return "\n".join(lines)
+
+        @mcp.tool()
+        async def sap_create_order(customer_id: str, items: list[dict], ctx: Context, requested_date: str = "") -> str:
+            """Create a sales order in SAP.
+
+            Args:
+                customer_id: Customer (business partner) ID
+                items: List of item dicts with keys: material, quantity
+                requested_date: Requested delivery date (YYYY-MM-DD, optional)
+            """
+            err = validation.validate_id(customer_id, "customer_id")
+            if err:
+                return err
+            if not items:
+                return "items is required."
+            if requested_date:
+                err = validation.validate_date(requested_date, "requested_date")
+                if err:
+                    return err
+            client, uid, err = await token_store.require_service(ctx, "sap", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sap")
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            order_items = []
+            for idx, item in enumerate(items):
+                order_item = {
+                    "SalesOrderItem": str((idx + 1) * 10),
+                    "Material": item.get("material", ""),
+                    "OrderQuantity": str(item.get("quantity", 1)),
+                }
+                order_items.append(order_item)
+            payload = {
+                "SalesOrderType": "OR",
+                "SoldToParty": customer_id,
+                "to_Item": {"results": order_items},
+            }
+            if requested_date:
+                payload["RequestedDeliveryDate"] = requested_date
+            r, err = await token_store.safe_request(
+                client, "POST", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder",
+                service="SAP", action="create order",
+                params={"$format": "json"},
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json().get("d", r.json())
+            oid = data.get("SalesOrder", "?")
+            return f"Sales order created.\nOrder: {oid}\nCustomer: {customer_id}\nItems: {len(items)}"
+
+        @mcp.tool()
+        async def sap_update_order(order_id: str, fields: dict, ctx: Context) -> str:
+            """Update fields on an existing SAP sales order.
+
+            Args:
+                order_id: The sales order number
+                fields: Dict of field names and values to update
+            """
+            err = validation.validate_id(order_id, "order_id")
+            if err:
+                return err
+            if not fields:
+                return "fields is required."
+            client, uid, err = await token_store.require_service(ctx, "sap", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sap")
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            safe_order_id = order_id.replace("'", "''")
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder('{safe_order_id}')",
+                service="SAP", action="update order",
+                params={"$format": "json"},
+                json=fields,
+            )
+            if err:
+                return err
+            updated = ", ".join(fields.keys())
+            return f"Order {order_id} updated.\nFields: {updated}"
+
+        @mcp.tool()
+        async def sap_cancel_order(order_id: str, ctx: Context, reason: str = "") -> str:
+            """Cancel a SAP sales order.
+
+            Args:
+                order_id: The sales order number
+                reason: Optional cancellation reason
+            """
+            err = validation.validate_id(order_id, "order_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sap", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sap")
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            safe_order_id = order_id.replace("'", "''")
+            payload = {"OverallSDProcessStatus": "C"}
+            if reason:
+                payload["RejectionReason"] = reason
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{base}/sap/opu/odata/sap/API_SALES_ORDER_SRV/A_SalesOrder('{safe_order_id}')",
+                service="SAP", action="cancel order",
+                params={"$format": "json"},
+                json=payload,
+            )
+            if err:
+                return err
+            return f"Order {order_id} cancelled."
+
+        @mcp.tool()
+        async def sap_list_materials(ctx: Context, search: str = "", limit: int = 25) -> str:
+            """Search SAP material master records.
+
+            Args:
+                search: Optional search term to filter materials
+                limit: Max results (default: 25)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "sap", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sap")
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            params = {"$top": min(limit, 100), "$format": "json"}
+            if search:
+                safe_search = search.replace("'", "''")
+                params["$filter"] = f"substringof('{safe_search}', MaterialDescription) or substringof('{safe_search}', Material)"
+            r, err = await token_store.safe_request(
+                client, "GET", f"{base}/sap/opu/odata/sap/API_MATERIAL_SRV/A_Material",
+                service="SAP", action="list materials",
+                params=params,
+            )
+            if err:
+                return err
+            results = r.json().get("d", {}).get("results", [])
+            if not results:
+                return "No materials found."
+            lines = []
+            for m in results:
+                mid = m.get("Material", "?")
+                desc = m.get("MaterialDescription", m.get("MaterialName", "?"))
+                mtype = m.get("MaterialType", "?")
+                group = m.get("MaterialGroup", "?")
+                lines.append(f"{mid} | {desc} | Type: {mtype} | Group: {group}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def sap_get_material(material_id: str, ctx: Context) -> str:
+            """Get details of a SAP material master record.
+
+            Args:
+                material_id: The material number
+            """
+            err = validation.validate_id(material_id, "material_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sap", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sap")
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            safe_material_id = material_id.replace("'", "''")
+            r, err = await token_store.safe_request(
+                client, "GET", f"{base}/sap/opu/odata/sap/API_MATERIAL_SRV/A_Material('{safe_material_id}')",
+                service="SAP", action="get material",
+                params={"$format": "json"},
+            )
+            if err:
+                return err
+            m = r.json().get("d", r.json())
+            desc = m.get("MaterialDescription", m.get("MaterialName", "?"))
+            mtype = m.get("MaterialType", "?")
+            group = m.get("MaterialGroup", "?")
+            uom = m.get("BaseUnit", "?")
+            weight = m.get("GrossWeight", "?")
+            return f"Material: {material_id}\nDescription: {desc}\nType: {mtype}\nGroup: {group}\nBase Unit: {uom}\nGross Weight: {weight}"
+
+        @mcp.tool()
+        async def sap_list_invoices(ctx: Context, customer_id: str = "", limit: int = 25) -> str:
+            """List billing documents (invoices) from SAP.
+
+            Args:
+                customer_id: Optional customer ID to filter invoices
+                limit: Max results (default: 25)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "sap", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sap")
+            base = creds.get("base_url", "")
+            url_err = validation.validate_base_url(base, "base_url")
+            if url_err:
+                return url_err
+            base = base.rstrip("/")
+            params = {"$top": min(limit, 100), "$format": "json"}
+            if customer_id:
+                safe_cid = customer_id.replace("'", "''")
+                params["$filter"] = f"SoldToParty eq '{safe_cid}'"
+            r, err = await token_store.safe_request(
+                client, "GET", f"{base}/sap/opu/odata/sap/API_BILLING_DOCUMENT_SRV/A_BillingDocument",
+                service="SAP", action="list invoices",
+                params=params,
+            )
+            if err:
+                return err
+            results = r.json().get("d", {}).get("results", [])
+            if not results:
+                return "No invoices found."
+            lines = []
+            for inv in results:
+                doc_id = inv.get("BillingDocument", "?")
+                doc_type = inv.get("BillingDocumentType", "?")
+                customer = inv.get("SoldToParty", "?")
+                amount = inv.get("TotalNetAmount", "?")
+                currency = inv.get("TransactionCurrency", "")
+                date = inv.get("BillingDocumentDate", "?")
+                lines.append(f"Invoice {doc_id} | Type: {doc_type} | Customer: {customer} | {currency} {amount} | Date: {date}")
+            return "\n".join(lines)

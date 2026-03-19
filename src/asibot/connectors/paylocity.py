@@ -225,3 +225,123 @@ class PaylocityConnector(Connector):
                 desc = dept.get("description", "?")
                 lines.append(f"{code}: {desc}")
             return "\n".join(lines)
+
+        @mcp.tool()
+        async def paylocity_get_pay_history(employee_id: str, year: str, ctx: Context) -> str:
+            """Get pay history for an employee for a given year from Paylocity.
+
+            Args:
+                employee_id: The employee ID
+                year: The year to retrieve pay history for (e.g., '2024')
+            """
+            err = validation.validate_id(employee_id, "employee_id")
+            if err:
+                return err
+            err = validation.validate_content(year, "year")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "paylocity", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "paylocity")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Paylocity", "authenticate", e)
+            company_id = creds["company_id"]
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/companies/{company_id}/employees/{employee_id}/paystatement",
+                service="Paylocity", action="get pay history",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"year": year},
+            )
+            if err:
+                return err
+            data = r.json()
+            statements = data if isinstance(data, list) else data.get("payStatement", [data])
+            if not statements:
+                return f"No pay history found for employee {employee_id} in {year}."
+            lines = [f"Pay history for employee {employee_id} ({year}):"]
+            for stmt in statements:
+                check = stmt.get("checkDate", "?")
+                gross = stmt.get("grossPay", "?")
+                net = stmt.get("netPay", "?")
+                lines.append(f"  Check Date: {check} | Gross: {gross} | Net: {net}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def paylocity_list_earnings(employee_id: str, ctx: Context) -> str:
+            """List earning codes for an employee from Paylocity.
+
+            Args:
+                employee_id: The employee ID
+            """
+            err = validation.validate_id(employee_id, "employee_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "paylocity", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "paylocity")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Paylocity", "authenticate", e)
+            company_id = creds["company_id"]
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/companies/{company_id}/employees/{employee_id}/earnings",
+                service="Paylocity", action="list earnings",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if err:
+                return err
+            earnings = r.json()
+            if isinstance(earnings, dict):
+                earnings = earnings.get("earnings", earnings.get("data", []))
+            if not earnings:
+                return f"No earnings found for employee {employee_id}."
+            lines = []
+            for e in earnings:
+                code = e.get("earningCode", e.get("code", "?"))
+                desc = e.get("description", e.get("earningDescription", "?"))
+                amount = e.get("amount", e.get("rate", "?"))
+                lines.append(f"{code}: {desc} | Amount: {amount}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def paylocity_get_benefits(employee_id: str, ctx: Context) -> str:
+            """Get benefits enrollment info for an employee from Paylocity.
+
+            Args:
+                employee_id: The employee ID
+            """
+            err = validation.validate_id(employee_id, "employee_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "paylocity", level="read")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "paylocity")
+            try:
+                token = await _get_access_token(creds)
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                return token_store.format_api_error("Paylocity", "authenticate", e)
+            company_id = creds["company_id"]
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/companies/{company_id}/employees/{employee_id}/benefitSetup",
+                service="Paylocity", action="get benefits",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if err:
+                return err
+            data = r.json()
+            benefits = data if isinstance(data, list) else data.get("benefits", data.get("benefitSetup", [data]))
+            if not benefits:
+                return f"No benefits found for employee {employee_id}."
+            lines = [f"Benefits for employee {employee_id}:"]
+            for b in benefits:
+                plan = b.get("planDescription", b.get("plan", "?"))
+                coverage = b.get("coverageLevel", b.get("coverage", "?"))
+                effective = b.get("effectiveDate", b.get("startDate", "?"))
+                lines.append(f"  {plan} | Coverage: {coverage} | Effective: {effective}")
+            return "\n".join(lines)

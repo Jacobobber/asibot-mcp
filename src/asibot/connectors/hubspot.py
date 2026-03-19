@@ -1,5 +1,6 @@
-"""HubSpot connector: contacts and deals via HubSpot REST API."""
+"""HubSpot connector: contacts, deals, companies, associations, and engagements via HubSpot REST API."""
 
+import json
 import logging
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -368,3 +369,324 @@ class HubSpotConnector(Connector):
                 return err
             data = r.json()
             return f"Deal created. ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def hubspot_update_contact(contact_id: str, ctx: Context, properties_json: str = "") -> str:
+            """Update a HubSpot contact's properties.
+
+            Args:
+                contact_id: The contact ID
+                properties_json: JSON string of properties to update (e.g., '{"email": "new@example.com", "phone": "555-1234"}')
+            """
+            err = validation.validate_id(contact_id, "contact_id")
+            if err:
+                return err
+            if not properties_json or not properties_json.strip():
+                return "properties_json is required."
+            try:
+                properties = json.loads(properties_json)
+            except (json.JSONDecodeError, TypeError):
+                return "Invalid properties_json: must be valid JSON."
+            if not isinstance(properties, dict):
+                return "Invalid properties_json: must be a JSON object."
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{API}/crm/v3/objects/contacts/{contact_id}",
+                service="HubSpot", action="update contact",
+                json={"properties": properties},
+            )
+            if err:
+                return err
+            return f"Contact {contact_id} updated."
+
+        @mcp.tool()
+        async def hubspot_update_deal(deal_id: str, ctx: Context, properties_json: str = "") -> str:
+            """Update a HubSpot deal's properties (stage, amount, etc.).
+
+            Args:
+                deal_id: The deal ID
+                properties_json: JSON string of properties to update (e.g., '{"dealstage": "closedwon", "amount": "50000"}')
+            """
+            err = validation.validate_id(deal_id, "deal_id")
+            if err:
+                return err
+            if not properties_json or not properties_json.strip():
+                return "properties_json is required."
+            try:
+                properties = json.loads(properties_json)
+            except (json.JSONDecodeError, TypeError):
+                return "Invalid properties_json: must be valid JSON."
+            if not isinstance(properties, dict):
+                return "Invalid properties_json: must be a JSON object."
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{API}/crm/v3/objects/deals/{deal_id}",
+                service="HubSpot", action="update deal",
+                json={"properties": properties},
+            )
+            if err:
+                return err
+            return f"Deal {deal_id} updated."
+
+        @mcp.tool()
+        async def hubspot_update_company(company_id: str, ctx: Context, properties_json: str = "") -> str:
+            """Update a HubSpot company's properties.
+
+            Args:
+                company_id: The company ID
+                properties_json: JSON string of properties to update (e.g., '{"name": "New Name", "industry": "Tech"}')
+            """
+            err = validation.validate_id(company_id, "company_id")
+            if err:
+                return err
+            if not properties_json or not properties_json.strip():
+                return "properties_json is required."
+            try:
+                properties = json.loads(properties_json)
+            except (json.JSONDecodeError, TypeError):
+                return "Invalid properties_json: must be valid JSON."
+            if not isinstance(properties, dict):
+                return "Invalid properties_json: must be a JSON object."
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PATCH", f"{API}/crm/v3/objects/companies/{company_id}",
+                service="HubSpot", action="update company",
+                json={"properties": properties},
+            )
+            if err:
+                return err
+            return f"Company {company_id} updated."
+
+        @mcp.tool()
+        async def hubspot_create_company(name: str, ctx: Context, properties_json: str = "") -> str:
+            """Create a new HubSpot company.
+
+            Args:
+                name: Company name
+                properties_json: JSON string of additional properties (optional, e.g., '{"domain": "acme.com", "industry": "Tech"}')
+            """
+            err = validation.validate_content(name, "name")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="write")
+            if err:
+                return err
+            properties = {"name": name}
+            if properties_json and properties_json.strip():
+                try:
+                    extra = json.loads(properties_json)
+                except (json.JSONDecodeError, TypeError):
+                    return "Invalid properties_json: must be valid JSON."
+                if not isinstance(extra, dict):
+                    return "Invalid properties_json: must be a JSON object."
+                properties.update(extra)
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/crm/v3/objects/companies",
+                service="HubSpot", action="create company",
+                json={"properties": properties},
+            )
+            if err:
+                return err
+            data = r.json()
+            return f"Company created. ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def hubspot_create_association(from_type: str, from_id: str, to_type: str, to_id: str, association_type: str, ctx: Context) -> str:
+            """Associate two HubSpot records (e.g., contact to deal, deal to company).
+
+            Args:
+                from_type: Source object type (contacts, deals, companies)
+                from_id: Source object ID
+                to_type: Target object type (contacts, deals, companies)
+                to_id: Target object ID
+                association_type: Association type ID (e.g., "contact_to_deal")
+            """
+            if from_type not in _HUBSPOT_OBJECT_TYPES:
+                return f"Invalid from_type: '{from_type}'. Allowed: {', '.join(sorted(_HUBSPOT_OBJECT_TYPES))}"
+            if to_type not in _HUBSPOT_OBJECT_TYPES:
+                return f"Invalid to_type: '{to_type}'. Allowed: {', '.join(sorted(_HUBSPOT_OBJECT_TYPES))}"
+            err = validation.validate_id(from_id, "from_id")
+            if err:
+                return err
+            err = validation.validate_id(to_id, "to_id")
+            if err:
+                return err
+            err = validation.validate_content(association_type, "association_type")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PUT", f"{API}/crm/v3/objects/{from_type}/{from_id}/associations/{to_type}/{to_id}/{association_type}",
+                service="HubSpot", action="create association",
+            )
+            if err:
+                return err
+            return f"Association created: {from_type}/{from_id} -> {to_type}/{to_id}."
+
+        @mcp.tool()
+        async def hubspot_list_associations(object_type: str, object_id: str, to_type: str, ctx: Context, limit: int = 10) -> str:
+            """List associations for a HubSpot object.
+
+            Args:
+                object_type: Source object type (contacts, deals, companies)
+                object_id: The object ID
+                to_type: Target object type (contacts, deals, companies)
+                limit: Max results (default: 10)
+            """
+            if object_type not in _HUBSPOT_OBJECT_TYPES:
+                return f"Invalid object_type: '{object_type}'. Allowed: {', '.join(sorted(_HUBSPOT_OBJECT_TYPES))}"
+            if to_type not in _HUBSPOT_OBJECT_TYPES:
+                return f"Invalid to_type: '{to_type}'. Allowed: {', '.join(sorted(_HUBSPOT_OBJECT_TYPES))}"
+            err = validation.validate_id(object_id, "object_id")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/crm/v3/objects/{object_type}/{object_id}/associations/{to_type}",
+                service="HubSpot", action="list associations",
+                params={"limit": limit},
+            )
+            if err:
+                return err
+            results = r.json().get("results", [])
+            if not results:
+                return "No associations found."
+            lines = []
+            for a in results:
+                lines.append(f"ID: {a.get('id', '?')} | Type: {a.get('type', '?')}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def hubspot_create_note(body: str, ctx: Context, associations_json: str = "") -> str:
+            """Create an engagement note in HubSpot.
+
+            Args:
+                body: Note body text
+                associations_json: JSON string of associations (optional, e.g., '{"contactIds": ["101"], "dealIds": ["201"]}')
+            """
+            err = validation.validate_content(body, "body")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="write")
+            if err:
+                return err
+            payload = {
+                "properties": {
+                    "hs_note_body": body,
+                    "hs_timestamp": "",
+                },
+            }
+            if associations_json and associations_json.strip():
+                try:
+                    associations = json.loads(associations_json)
+                except (json.JSONDecodeError, TypeError):
+                    return "Invalid associations_json: must be valid JSON."
+                if not isinstance(associations, dict):
+                    return "Invalid associations_json: must be a JSON object."
+                payload["associations"] = associations
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/crm/v3/objects/notes",
+                service="HubSpot", action="create note",
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json()
+            return f"Note created. ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def hubspot_create_task(subject: str, ctx: Context, body: str = "", due_date: str = "", associations_json: str = "") -> str:
+            """Create a task in HubSpot.
+
+            Args:
+                subject: Task subject/title
+                body: Task body/description (optional)
+                due_date: Due date in YYYY-MM-DD format (optional)
+                associations_json: JSON string of associations (optional, e.g., '{"contactIds": ["101"]}')
+            """
+            err = validation.validate_content(subject, "subject")
+            if err:
+                return err
+            if due_date:
+                err = validation.validate_date(due_date, "due_date")
+                if err:
+                    return err
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="write")
+            if err:
+                return err
+            properties = {"hs_task_subject": subject, "hs_task_status": "NOT_STARTED"}
+            if body:
+                properties["hs_task_body"] = body
+            if due_date:
+                properties["hs_task_due_date"] = due_date
+            payload = {"properties": properties}
+            if associations_json and associations_json.strip():
+                try:
+                    associations = json.loads(associations_json)
+                except (json.JSONDecodeError, TypeError):
+                    return "Invalid associations_json: must be valid JSON."
+                if not isinstance(associations, dict):
+                    return "Invalid associations_json: must be a JSON object."
+                payload["associations"] = associations
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/crm/v3/objects/tasks",
+                service="HubSpot", action="create task",
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json()
+            return f"Task created. ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def hubspot_delete_contact(contact_id: str, ctx: Context) -> str:
+            """Delete a HubSpot contact.
+
+            Args:
+                contact_id: The contact ID to delete
+            """
+            err = validation.validate_id(contact_id, "contact_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"{API}/crm/v3/objects/contacts/{contact_id}",
+                service="HubSpot", action="delete contact",
+            )
+            if err:
+                return err
+            return f"Contact {contact_id} deleted."
+
+        @mcp.tool()
+        async def hubspot_delete_deal(deal_id: str, ctx: Context) -> str:
+            """Delete a HubSpot deal.
+
+            Args:
+                deal_id: The deal ID to delete
+            """
+            err = validation.validate_id(deal_id, "deal_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "hubspot", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"{API}/crm/v3/objects/deals/{deal_id}",
+                service="HubSpot", action="delete deal",
+            )
+            if err:
+                return err
+            return f"Deal {deal_id} deleted."

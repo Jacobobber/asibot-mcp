@@ -321,3 +321,216 @@ class NotionConnector(Connector):
                 return err
             data = r.json()
             return f"Entry created. ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def notion_update_block(block_id: str, content: str, ctx: Context) -> str:
+            """Update the content of a Notion block (paragraph, heading, etc.).
+
+            Args:
+                block_id: Block ID (UUID)
+                content: New text content for the block
+            """
+            err = validation.validate_id(block_id, "block_id")
+            if err:
+                return err
+            err = validation.validate_content(content, "content")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "notion", level="write")
+            if err:
+                return err
+            # Fetch existing block to determine its type
+            br, fetch_err = await token_store.safe_request(client, "GET", f"{API}/v1/blocks/{block_id}", service="Notion", action="get block")
+            if fetch_err:
+                return fetch_err
+            block = br.json()
+            btype = block.get("type", "paragraph")
+            body = {
+                btype: {
+                    "rich_text": [{"type": "text", "text": {"content": content}}],
+                },
+            }
+            r, err = await token_store.safe_request(client, "PATCH", f"{API}/v1/blocks/{block_id}", service="Notion", action="update block", json=body)
+            if err:
+                return err
+            return f"Block updated. ID: {block_id}"
+
+        @mcp.tool()
+        async def notion_delete_block(block_id: str, ctx: Context) -> str:
+            """Delete a Notion block.
+
+            Args:
+                block_id: Block ID (UUID)
+            """
+            err = validation.validate_id(block_id, "block_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "notion", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "DELETE", f"{API}/v1/blocks/{block_id}", service="Notion", action="delete block")
+            if err:
+                return err
+            return f"Block deleted. ID: {block_id}"
+
+        @mcp.tool()
+        async def notion_append_blocks(page_id: str, blocks_json: str, ctx: Context) -> str:
+            """Append blocks to a Notion page.
+
+            Args:
+                page_id: Page ID (UUID)
+                blocks_json: JSON array of block objects to append
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            err = validation.validate_content(blocks_json, "blocks_json")
+            if err:
+                return err
+            try:
+                blocks = json.loads(blocks_json)
+            except (json.JSONDecodeError, TypeError):
+                return "Invalid blocks_json: must be a valid JSON array."
+            if not isinstance(blocks, list):
+                return "Invalid blocks_json: must be a JSON array."
+            client, uid, err = await token_store.require_service(ctx, "notion", level="write")
+            if err:
+                return err
+            body = {"children": blocks}
+            r, err = await token_store.safe_request(client, "PATCH", f"{API}/v1/blocks/{page_id}/children", service="Notion", action="append blocks", json=body)
+            if err:
+                return err
+            return f"Blocks appended to page {page_id}."
+
+        @mcp.tool()
+        async def notion_update_database(database_id: str, ctx: Context, title: str = "", properties_json: str = "") -> str:
+            """Update a Notion database title and/or properties.
+
+            Args:
+                database_id: Database ID (UUID)
+                title: New title for the database (optional)
+                properties_json: JSON string of properties to update (optional)
+            """
+            err = validation.validate_id(database_id, "database_id")
+            if err:
+                return err
+            if not title and not properties_json:
+                return "At least one of title or properties_json is required."
+            body = {}
+            if title:
+                body["title"] = [{"type": "text", "text": {"content": title}}]
+            if properties_json:
+                try:
+                    properties = json.loads(properties_json)
+                except (json.JSONDecodeError, TypeError):
+                    return "Invalid properties_json: must be valid JSON."
+                body["properties"] = properties
+            client, uid, err = await token_store.require_service(ctx, "notion", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "PATCH", f"{API}/v1/databases/{database_id}", service="Notion", action="update database", json=body)
+            if err:
+                return err
+            data = r.json()
+            return f"Database updated. ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def notion_delete_page(page_id: str, ctx: Context) -> str:
+            """Archive (delete) a Notion page.
+
+            Args:
+                page_id: Page ID (UUID)
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "notion", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "PATCH", f"{API}/v1/pages/{page_id}", service="Notion", action="archive page", json={"archived": True})
+            if err:
+                return err
+            return f"Page archived. ID: {page_id}"
+
+        @mcp.tool()
+        async def notion_add_comment(page_id: str, body: str, ctx: Context) -> str:
+            """Add a comment to a Notion page.
+
+            Args:
+                page_id: Page ID (UUID)
+                body: Comment text
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            err = validation.validate_content(body, "body")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "notion", level="write")
+            if err:
+                return err
+            payload = {
+                "parent": {"page_id": page_id},
+                "rich_text": [{"type": "text", "text": {"content": body}}],
+            }
+            r, err = await token_store.safe_request(client, "POST", f"{API}/v1/comments", service="Notion", action="add comment", json=payload)
+            if err:
+                return err
+            data = r.json()
+            return f"Comment added. ID: {data.get('id', '?')}"
+
+        @mcp.tool()
+        async def notion_list_comments(page_id: str, ctx: Context) -> str:
+            """List comments on a Notion page.
+
+            Args:
+                page_id: Page ID (UUID)
+            """
+            err = validation.validate_id(page_id, "page_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "notion", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/comments", service="Notion", action="list comments", params={"block_id": page_id})
+            if err:
+                return err
+            data = r.json()
+            comments = data.get("results", [])
+            if not comments:
+                return "No comments found."
+            lines = []
+            for c in comments:
+                rich_text = c.get("rich_text", [])
+                text = _rich_text_to_str(rich_text)
+                created = c.get("created_time", "?")
+                comment_id = c.get("id", "?")
+                lines.append(f"[{created[:16] if created and created != '?' else created}] (ID: {comment_id})\n  {text}")
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def notion_list_users(ctx: Context) -> str:
+            """List users in the Notion workspace."""
+            client, uid, err = await token_store.require_service(ctx, "notion", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/v1/users", service="Notion", action="list users")
+            if err:
+                return err
+            data = r.json()
+            users = data.get("results", [])
+            if not users:
+                return "No users found."
+            lines = []
+            for u in users:
+                name = u.get("name", "?")
+                utype = u.get("type", "?")
+                uid_val = u.get("id", "?")
+                email = ""
+                if utype == "person":
+                    email = u.get("person", {}).get("email", "")
+                elif utype == "bot":
+                    email = "(bot)"
+                email_str = f" | {email}" if email else ""
+                lines.append(f"{name} ({utype}){email_str}\n  ID: {uid_val}")
+            return "\n\n".join(lines)

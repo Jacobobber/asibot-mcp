@@ -185,3 +185,98 @@ class LinkSquaresConnector(Connector):
                 status = a.get("status", "?")
                 lines.append(f"{title} (ID: {aid}) | Effective: {date} | Status: {status}")
             return "\n".join(lines)
+
+        @mcp.tool()
+        async def linksquares_list_tags(ctx: Context) -> str:
+            """List all available tags in LinkSquares."""
+            client, uid, err = await token_store.require_service(ctx, "linksquares", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/tags", service="LinkSquares", action="list tags")
+            if err:
+                return err
+            data = r.json()
+            tags = data.get("tags", data.get("data", []))
+            if not tags:
+                return "No tags found."
+            lines = []
+            for t in tags:
+                name = t.get("name", t.get("label", "?"))
+                tid = t.get("id", "?")
+                lines.append(f"{name} (ID: {tid})")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def linksquares_add_tag(contract_id: str, tag: str, ctx: Context) -> str:
+            """Add a tag to a contract in LinkSquares.
+
+            Args:
+                contract_id: The contract ID
+                tag: The tag name or ID to add
+            """
+            err = validation.validate_id(contract_id, "contract_id")
+            if err:
+                return err
+            err = validation.validate_content(tag, "tag")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "linksquares", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/contracts/{contract_id}/tags",
+                service="LinkSquares", action="add tag",
+                json={"tag": tag},
+            )
+            if err:
+                return err
+            return f"Tag '{tag}' added to contract {contract_id}."
+
+        @mcp.tool()
+        async def linksquares_list_parties(contract_id: str, ctx: Context) -> str:
+            """List parties (signers, counterparties) for a contract in LinkSquares.
+
+            Args:
+                contract_id: The contract ID
+            """
+            err = validation.validate_id(contract_id, "contract_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "linksquares", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/contracts/{contract_id}/parties", service="LinkSquares", action="list parties")
+            if err:
+                return err
+            data = r.json()
+            parties = data.get("parties", data.get("data", []))
+            if not parties:
+                return "No parties found for this contract."
+            lines = []
+            for p in parties:
+                name = p.get("name", "?")
+                role = p.get("role", p.get("type", "?"))
+                lines.append(f"{name} | Role: {role}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def linksquares_get_summary(contract_id: str, ctx: Context) -> str:
+            """Get an AI-generated summary for a contract in LinkSquares.
+
+            Args:
+                contract_id: The contract ID
+            """
+            err = validation.validate_id(contract_id, "contract_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "linksquares", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(client, "GET", f"{API}/contracts/{contract_id}/summary", service="LinkSquares", action="get summary")
+            if err:
+                return err
+            data = r.json()
+            summary = data.get("summary", data.get("text", ""))
+            if not summary:
+                return "No summary available for this contract."
+            return f"Summary for contract {contract_id}:\n{summary}"

@@ -198,3 +198,146 @@ class ShareFileConnector(Connector):
                 created = s.get("CreationDate", "?")[:10] if s.get("CreationDate") else "?"
                 lines.append(f"{name} (ID: {share_id}) | Created: {created}")
             return "\n".join(lines)
+
+        @mcp.tool()
+        async def sharefile_upload_file(parent_id: str, filename: str, content: str, ctx: Context) -> str:
+            """Upload a file to a ShareFile folder.
+
+            Args:
+                parent_id: The parent folder ID to upload into
+                filename: Name of the file to create
+                content: Text content for the file
+            """
+            err = validation.validate_id(parent_id, "parent_id")
+            if err:
+                return err
+            err = validation.validate_content(filename, "filename")
+            if err:
+                return err
+            err = validation.validate_content(content, "content")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sharefile", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sharefile")
+            try:
+                base = _api(creds)
+            except ValueError as e:
+                return str(e)
+            r, err = await token_store.safe_request(
+                client, "POST", f"{base}/Items({parent_id})/Upload",
+                service="ShareFile", action="upload file",
+                json={"FileName": filename, "Content": content},
+            )
+            if err:
+                return err
+            data = r.json()
+            fid = data.get("Id", data.get("id", "?"))
+            return f"Uploaded '{filename}' (ID: {fid}) to folder {parent_id}."
+
+        @mcp.tool()
+        async def sharefile_create_folder(parent_id: str, name: str, ctx: Context, description: str = "") -> str:
+            """Create a new folder in ShareFile.
+
+            Args:
+                parent_id: The parent folder ID
+                name: Name for the new folder
+                description: Optional folder description
+            """
+            err = validation.validate_id(parent_id, "parent_id")
+            if err:
+                return err
+            err = validation.validate_content(name, "name")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sharefile", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sharefile")
+            try:
+                base = _api(creds)
+            except ValueError as e:
+                return str(e)
+            payload = {"Name": name, "Description": description}
+            r, err = await token_store.safe_request(
+                client, "POST", f"{base}/Items({parent_id})/Folder",
+                service="ShareFile", action="create folder",
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json()
+            fid = data.get("Id", data.get("id", "?"))
+            return f"Created folder '{name}' (ID: {fid}) under {parent_id}."
+
+        @mcp.tool()
+        async def sharefile_delete_item(item_id: str, ctx: Context) -> str:
+            """Delete a file or folder from ShareFile.
+
+            Args:
+                item_id: The item ID to delete
+            """
+            err = validation.validate_id(item_id, "item_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "sharefile", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sharefile")
+            try:
+                base = _api(creds)
+            except ValueError as e:
+                return str(e)
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"{base}/Items({item_id})",
+                service="ShareFile", action="delete item",
+            )
+            if err:
+                return err
+            return f"Deleted item {item_id}."
+
+        @mcp.tool()
+        async def sharefile_create_share(item_id: str, emails: str, ctx: Context, expiration_days: int = 30) -> str:
+            """Create a share link for a ShareFile item and send to specified emails.
+
+            Args:
+                item_id: The item ID to share
+                emails: Comma-separated email addresses
+                expiration_days: Number of days until link expires (default: 30)
+            """
+            err = validation.validate_id(item_id, "item_id")
+            if err:
+                return err
+            err = validation.validate_content(emails, "emails")
+            if err:
+                return err
+            email_list = [e.strip() for e in emails.split(",") if e.strip()]
+            for email in email_list:
+                err = validation.validate_email_address(email)
+                if err:
+                    return err
+            client, uid, err = await token_store.require_service(ctx, "sharefile", level="write")
+            if err:
+                return err
+            creds = token_store.get_credentials(uid, "sharefile")
+            try:
+                base = _api(creds)
+            except ValueError as e:
+                return str(e)
+            payload = {
+                "Items": [{"Id": item_id}],
+                "Recipients": [{"User": {"Email": e}} for e in email_list],
+                "ExpirationDays": expiration_days,
+            }
+            r, err = await token_store.safe_request(
+                client, "POST", f"{base}/Shares",
+                service="ShareFile", action="create share",
+                json=payload,
+            )
+            if err:
+                return err
+            data = r.json()
+            share_id = data.get("Id", data.get("id", "?"))
+            uri = data.get("Uri", data.get("uri", ""))
+            return f"Share created (ID: {share_id}) for {', '.join(email_list)}. Expires in {expiration_days} days.{f' Link: {uri}' if uri else ''}"

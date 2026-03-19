@@ -262,3 +262,247 @@ class ZendeskConnector(Connector):
             if err:
                 return err
             return f"Comment added to ticket #{ticket_id}."
+
+        @mcp.tool()
+        async def zendesk_update_ticket(
+            ticket_id: str, ctx: Context,
+            status: str = "", priority: str = "", assignee_id: str = "",
+            tags: str = "", subject: str = "",
+        ) -> str:
+            """Update fields on a Zendesk ticket.
+
+            Args:
+                ticket_id: Ticket ID
+                status: New status (open, pending, solved, closed) — optional
+                priority: New priority (low, normal, high, urgent) — optional
+                assignee_id: New assignee user ID — optional
+                tags: Comma-separated tags to set — optional
+                subject: New subject — optional
+            """
+            err = validation.validate_id(ticket_id, "ticket_id")
+            if err:
+                return err
+            update: dict = {}
+            if status:
+                valid_statuses = {"open", "pending", "solved", "closed"}
+                if status not in valid_statuses:
+                    return f"Invalid status: '{status}'. Allowed: {', '.join(sorted(valid_statuses))}"
+                update["status"] = status
+            if priority:
+                if priority not in _ZENDESK_PRIORITIES:
+                    return f"Invalid priority: '{priority}'. Allowed: {', '.join(sorted(_ZENDESK_PRIORITIES))}"
+                update["priority"] = priority
+            if assignee_id:
+                update["assignee_id"] = assignee_id
+            if tags:
+                update["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+            if subject:
+                update["subject"] = subject
+            if not update:
+                return "No fields to update. Provide at least one field."
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/tickets/{ticket_id}.json",
+                service="Zendesk", action="update ticket",
+                json={"ticket": update},
+            )
+            if err:
+                return err
+            return f"Ticket #{ticket_id} updated."
+
+        @mcp.tool()
+        async def zendesk_close_ticket(ticket_id: str, ctx: Context) -> str:
+            """Close a Zendesk ticket (set status to closed).
+
+            Args:
+                ticket_id: Ticket ID
+            """
+            err = validation.validate_id(ticket_id, "ticket_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/tickets/{ticket_id}.json",
+                service="Zendesk", action="close ticket",
+                json={"ticket": {"status": "closed"}},
+            )
+            if err:
+                return err
+            return f"Ticket #{ticket_id} closed."
+
+        @mcp.tool()
+        async def zendesk_add_tags(ticket_id: str, tags: str, ctx: Context) -> str:
+            """Add tags to a Zendesk ticket.
+
+            Args:
+                ticket_id: Ticket ID
+                tags: Comma-separated tags to add
+            """
+            err = validation.validate_id(ticket_id, "ticket_id")
+            if err:
+                return err
+            err = validation.validate_content(tags, "tags")
+            if err:
+                return err
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+            if not tag_list:
+                return "tags is required."
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/tickets/{ticket_id}/tags.json",
+                service="Zendesk", action="add tags",
+                json={"tags": tag_list},
+            )
+            if err:
+                return err
+            return f"Tags added to ticket #{ticket_id}: {', '.join(tag_list)}"
+
+        @mcp.tool()
+        async def zendesk_remove_tags(ticket_id: str, tags: str, ctx: Context) -> str:
+            """Remove tags from a Zendesk ticket.
+
+            Args:
+                ticket_id: Ticket ID
+                tags: Comma-separated tags to remove
+            """
+            err = validation.validate_id(ticket_id, "ticket_id")
+            if err:
+                return err
+            err = validation.validate_content(tags, "tags")
+            if err:
+                return err
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+            if not tag_list:
+                return "tags is required."
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "DELETE", f"/tickets/{ticket_id}/tags.json",
+                service="Zendesk", action="remove tags",
+                json={"tags": tag_list},
+            )
+            if err:
+                return err
+            return f"Tags removed from ticket #{ticket_id}: {', '.join(tag_list)}"
+
+        @mcp.tool()
+        async def zendesk_list_views(ctx: Context) -> str:
+            """List saved views in Zendesk."""
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", "/views.json",
+                service="Zendesk", action="list views",
+            )
+            if err:
+                return err
+            views = r.json().get("views", [])
+            if not views:
+                return "No views found."
+            lines = []
+            for v in views:
+                lines.append(
+                    f"{v.get('title', '?')}\n"
+                    f"  ID: {v.get('id', '?')} | Active: {v.get('active', '?')}"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def zendesk_get_view_tickets(view_id: str, ctx: Context, limit: int = 20) -> str:
+            """Get tickets from a Zendesk saved view.
+
+            Args:
+                view_id: View ID
+                limit: Max results (default: 20)
+            """
+            err = validation.validate_id(view_id, "view_id")
+            if err:
+                return err
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"/views/{view_id}/tickets.json",
+                service="Zendesk", action="get view tickets",
+                params={"per_page": min(limit, 100)},
+            )
+            if err:
+                return err
+            tickets = r.json().get("tickets", [])
+            if not tickets:
+                return "No tickets in this view."
+            lines = []
+            for t in tickets[:limit]:
+                lines.append(
+                    f"#{t.get('id', '?')}: {t.get('subject', '?')}\n"
+                    f"  Status: {t.get('status', '?')} | Priority: {t.get('priority', '?')}"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def zendesk_list_groups(ctx: Context) -> str:
+            """List agent groups in Zendesk."""
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", "/groups.json",
+                service="Zendesk", action="list groups",
+            )
+            if err:
+                return err
+            groups = r.json().get("groups", [])
+            if not groups:
+                return "No groups found."
+            lines = []
+            for g in groups:
+                lines.append(
+                    f"{g.get('name', '?')}\n"
+                    f"  ID: {g.get('id', '?')} | Default: {g.get('default', '?')}"
+                )
+            return "\n\n".join(lines)
+
+        @mcp.tool()
+        async def zendesk_assign_ticket(ticket_id: str, ctx: Context, assignee_id: str = "", group_id: str = "") -> str:
+            """Assign a Zendesk ticket to an agent and/or group.
+
+            Args:
+                ticket_id: Ticket ID
+                assignee_id: Agent user ID — optional
+                group_id: Group ID — optional
+            """
+            err = validation.validate_id(ticket_id, "ticket_id")
+            if err:
+                return err
+            update: dict = {}
+            if assignee_id:
+                update["assignee_id"] = assignee_id
+            if group_id:
+                update["group_id"] = group_id
+            if not update:
+                return "Provide at least one of assignee_id or group_id."
+            client, uid, err = await token_store.require_service(ctx, "zendesk", level="write")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "PUT", f"/tickets/{ticket_id}.json",
+                service="Zendesk", action="assign ticket",
+                json={"ticket": update},
+            )
+            if err:
+                return err
+            parts = []
+            if assignee_id:
+                parts.append(f"assignee {assignee_id}")
+            if group_id:
+                parts.append(f"group {group_id}")
+            return f"Ticket #{ticket_id} assigned to {' and '.join(parts)}."

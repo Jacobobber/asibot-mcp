@@ -176,3 +176,189 @@ class RingCentralConnector(Connector):
                 read_status = m.get("readStatus", "?")
                 lines.append(f"{created} | From: {caller} | Read: {read_status}")
             return "\n".join(lines)
+
+        @mcp.tool()
+        async def ringcentral_send_sms(to: str, text: str, ctx: Context) -> str:
+            """Send an SMS message via RingCentral.
+
+            Args:
+                to: Recipient phone number
+                text: Message text
+            """
+            err = validation.validate_content(to, "to")
+            if err:
+                return err
+            err = validation.validate_content(text, "text")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="write")
+            if err:
+                return err
+            body = {
+                "from": {"phoneNumber": "~"},
+                "to": [{"phoneNumber": to}],
+                "text": text,
+            }
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/account/~/extension/~/sms",
+                service="RingCentral", action="send SMS",
+                json=body,
+            )
+            if err:
+                return err
+            m = r.json()
+            return f"SMS sent successfully.\nID: {m.get('id', '?')}\nTo: {to}\nStatus: {m.get('messageStatus', '?')}"
+
+        @mcp.tool()
+        async def ringcentral_send_message(to: str, subject: str, text: str, ctx: Context) -> str:
+            """Send an internal pager message via RingCentral.
+
+            Args:
+                to: Recipient extension number
+                subject: Message subject
+                text: Message text
+            """
+            err = validation.validate_content(to, "to")
+            if err:
+                return err
+            err = validation.validate_content(text, "text")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="write")
+            if err:
+                return err
+            body = {
+                "from": {"extensionNumber": "~"},
+                "to": [{"extensionNumber": to}],
+                "text": text,
+            }
+            if subject:
+                body["subject"] = subject
+            r, err = await token_store.safe_request(
+                client, "POST", f"{API}/account/~/extension/~/company-pager",
+                service="RingCentral", action="send pager message",
+                json=body,
+            )
+            if err:
+                return err
+            m = r.json()
+            return f"Pager message sent successfully.\nID: {m.get('id', '?')}\nTo: {to}\nSubject: {m.get('subject', '?')}"
+
+        @mcp.tool()
+        async def ringcentral_get_call_details(call_id: str, ctx: Context) -> str:
+            """Get detailed information about a specific call.
+
+            Args:
+                call_id: The call log record ID
+            """
+            err = validation.validate_id(call_id, "call_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/account/~/call-log/{call_id}",
+                service="RingCentral", action="get call details",
+            )
+            if err:
+                return err
+            c = r.json()
+            from_info = c.get("from", {})
+            to_info = c.get("to", {})
+            return (
+                f"Call ID: {c.get('id', '?')}\n"
+                f"Direction: {c.get('direction', '?')}\n"
+                f"Result: {c.get('result', '?')}\n"
+                f"From: {from_info.get('name', from_info.get('phoneNumber', '?'))}\n"
+                f"To: {to_info.get('name', to_info.get('phoneNumber', '?'))}\n"
+                f"Start: {c.get('startTime', '?')}\n"
+                f"Duration: {c.get('duration', '?')}s\n"
+                f"Type: {c.get('type', '?')}"
+            )
+
+        @mcp.tool()
+        async def ringcentral_download_recording(recording_id: str, ctx: Context) -> str:
+            """Get the download URL for a call recording.
+
+            Args:
+                recording_id: The recording ID
+            """
+            err = validation.validate_id(recording_id, "recording_id")
+            if err:
+                return err
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/account/~/recording/{recording_id}",
+                service="RingCentral", action="get recording",
+            )
+            if err:
+                return err
+            rec = r.json()
+            return (
+                f"Recording ID: {rec.get('id', '?')}\n"
+                f"Duration: {rec.get('duration', '?')}s\n"
+                f"Content URI: {rec.get('contentUri', '?')}\n"
+                f"Content Type: {rec.get('contentType', '?')}"
+            )
+
+        @mcp.tool()
+        async def ringcentral_list_contacts(ctx: Context, search: str = "", limit: int = 25) -> str:
+            """List company contacts from the RingCentral directory.
+
+            Args:
+                search: Search query to filter contacts (optional)
+                limit: Max results (default: 25)
+            """
+            limit = validation.validate_limit(limit)
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
+            if err:
+                return err
+            params: dict = {"perPage": limit}
+            if search:
+                params["searchString"] = search
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/account/~/directory/contacts",
+                service="RingCentral", action="list contacts",
+                params=params,
+            )
+            if err:
+                return err
+            records = r.json().get("records", [])
+            if not records:
+                return "No contacts found."
+            lines = []
+            for c in records:
+                name = f"{c.get('firstName', '')} {c.get('lastName', '')}".strip() or "?"
+                ext = c.get("extensionNumber", "?")
+                email = c.get("email", "?")
+                lines.append(f"{name} | Ext: {ext} | Email: {email}")
+            return "\n".join(lines)
+
+        @mcp.tool()
+        async def ringcentral_list_active_calls(ctx: Context) -> str:
+            """List currently active calls in the RingCentral account."""
+            client, uid, err = await token_store.require_service(ctx, "ringcentral", level="read")
+            if err:
+                return err
+            r, err = await token_store.safe_request(
+                client, "GET", f"{API}/account/~/active-calls",
+                service="RingCentral", action="list active calls",
+            )
+            if err:
+                return err
+            records = r.json().get("records", [])
+            if not records:
+                return "No active calls."
+            lines = []
+            for c in records:
+                direction = c.get("direction", "?")
+                from_info = c.get("from", {})
+                to_info = c.get("to", {})
+                from_name = from_info.get("name", from_info.get("phoneNumber", "?"))
+                to_name = to_info.get("name", to_info.get("phoneNumber", "?"))
+                result = c.get("result", "?")
+                lines.append(f"{direction} | From: {from_name} | To: {to_name} | {result}")
+            return "\n".join(lines)
