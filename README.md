@@ -110,11 +110,18 @@ Claude walks you through Microsoft SSO sign-in. After that, just talk:
 
 ---
 
-## Managing Connections
+## Connecting Services
 
-Everything is managed through conversation:
+Tell Claude **"Connect me to [service]"** and it walks you through the rest. What happens next depends on the service:
 
-- **"Connect me to Jira"** — Claude walks you through authentication
+**Microsoft 365** (SharePoint, Outlook, Teams, Calendar) — Already connected after your initial SSO sign-in. Nothing extra needed.
+
+**GitHub, Google Workspace** — Claude shows a sign-in link and a short code. Open the link, enter the code, authorize. Done in 30 seconds. (Requires your admin to have configured the OAuth app — see admin setup below.)
+
+**Everything else** (Jira, Confluence, Salesforce, Notion, Zendesk, HubSpot, Figma, etc.) — Claude asks you for a personal API token. You generate one in that service's settings and paste it into the conversation. Claude stores it encrypted and never shows it again.
+
+### Other commands
+
 - **"What services am I connected to?"** — see all active connections
 - **"Disconnect Salesforce"** — remove stored credentials
 - **"Set GitHub to read-only"** — control access levels per service
@@ -206,21 +213,49 @@ ASIBOT_METRICS_BEARER_TOKEN=your-secret         # Secure the metrics endpoint
 ASIBOT_SHAREPOINT_SITE_URL=yourcompany.sharepoint.com
 ```
 
-**Optional — OAuth for GitHub/Google:**
+### Connector Setup by Auth Type
 
-```env
-ASIBOT_GITHUB_CLIENT_ID=your-github-client-id
-ASIBOT_GOOGLE_CLIENT_ID=your-google-client-id
-ASIBOT_GOOGLE_CLIENT_SECRET=your-google-secret
-```
+Services connect in three ways. Microsoft 365 is handled by the required Entra ID app (step 1). The rest are optional — configure what your org uses.
 
-**Optional — business defaults** (pre-fill org-level settings so users only provide personal tokens):
+#### OAuth device code flow (admin configures once, users just sign in)
+
+| Service | Admin sets in `.env` | User experience |
+|---------|---------------------|-----------------|
+| **GitHub** | `ASIBOT_GITHUB_CLIENT_ID` | User says "connect to GitHub," gets a sign-in link + code, authorizes in browser |
+| **Google Workspace** | `ASIBOT_GOOGLE_CLIENT_ID`, `ASIBOT_GOOGLE_CLIENT_SECRET` | Same — sign-in link + code for Google account |
+
+To get these credentials:
+- **GitHub**: Create an OAuth App at github.com → Settings → Developer settings → OAuth Apps. Set the callback URL to `https://github.com/login/device`. Copy the Client ID.
+- **Google**: Create OAuth credentials in Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client IDs. Enable the Calendar and Drive APIs.
+
+#### Personal API tokens (no admin setup, users bring their own)
+
+These services don't require any admin configuration. Users generate a token in the service's settings and paste it when Claude asks.
+
+| Service | Where users get their token |
+|---------|----------------------------|
+| **Jira / Confluence** | atlassian.com → Account Settings → Security → API tokens |
+| **Salesforce** | Setup → My Personal Information → Reset My Security Token |
+| **Notion** | notion.so → Settings → Connections → Create integration |
+| **Zendesk** | Admin Center → Apps and integrations → APIs → Zendesk API |
+| **HubSpot** | Settings → Integrations → Private Apps → Create |
+| **Figma** | Account Settings → Personal access tokens |
+| **Smartsheet** | Account → Personal Settings → API Access |
+| **Adobe Sign** | Account → Adobe Sign API → Access Tokens |
+| **Zoom** | Zoom Marketplace → Server-to-Server OAuth app (Account ID, Client ID, Client Secret) |
+| **Paylocity** | Paylocity admin → API credentials (Client ID, Client Secret, Company ID) |
+| **Others** | Claude tells the user exactly what to provide when they connect |
+
+#### Business defaults (optional, reduces user friction)
+
+Pre-fill org-level settings so users don't have to provide them:
 
 ```env
 ASIBOT_GITHUB_ORG=mycompany
 ASIBOT_ATLASSIAN_DOMAIN=mycompany.atlassian.net
 ASIBOT_ZENDESK_SUBDOMAIN=mycompany
 ASIBOT_SALESFORCE_INSTANCE_URL=https://mycompany.my.salesforce.com
+ASIBOT_SHAREPOINT_SITE_URL=yourcompany.sharepoint.com
 ```
 
 **TLS:** Place certificates at `deploy/certs/cert.pem` and `deploy/certs/key.pem`, or set `TLS_CERT_PATH`/`TLS_KEY_PATH` in `.env`. Alternatively, terminate TLS at Azure Application Gateway and set `ASIBOT_ALLOW_INSECURE_HTTP=true`.
