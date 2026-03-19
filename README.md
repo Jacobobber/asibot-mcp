@@ -4,29 +4,13 @@ Asibot gives Claude direct access to 26 enterprise platforms your team already u
 
 ## Get Started
 
-Add to your `claude_desktop_config.json` and restart Claude Desktop:
+Your Claude Enterprise admin configures the Asibot MCP integration once — after that, it's available to every employee across Claude Desktop, Claude Code, and claude.ai automatically. No per-user setup needed.
 
-```json
-{
-  "mcpServers": {
-    "asibot": {
-      "command": "npx",
-      "args": [
-        "mcp-remote",
-        "https://asibot.yourcompany.com/mcp",
-        "--header",
-        "Authorization:Bearer YOUR_API_KEY"
-      ]
-    }
-  }
-}
-```
-
-Don't have an API key yet? Leave the config out and tell Claude:
+The first time you use Asibot, tell Claude:
 
 > **Set up my Asibot account.**
 
-Claude will walk you through Microsoft SSO sign-in and give you your API key and config snippet to paste in.
+Claude walks you through Microsoft SSO sign-in. After that, just talk:
 
 > **Connect me to Jira.**
 
