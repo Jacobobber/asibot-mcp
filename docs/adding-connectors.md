@@ -2,6 +2,71 @@
 
 This guide walks you through adding a new connector to Asibot — for an internal tool, a third-party API, or anything with an HTTP API.
 
+## Prerequisites: Does your tool have an API?
+
+Asibot connects to tools over HTTP — it sends requests and reads JSON responses. If your tool only has a GUI (web app, desktop app) with no API, you'll need to add one first.
+
+### If your tool is a web app with a backend
+
+You likely already have API routes that your frontend calls (e.g., `POST /api/items`, `GET /api/items/:id`). These same routes can be used by Asibot. You just need to:
+
+1. **Make sure the routes return JSON** (most frameworks do this by default)
+2. **Add authentication** — at minimum, an API key check. A simple middleware that validates a token in the `Authorization` header works:
+
+```python
+# FastAPI example
+from fastapi import Header, HTTPException
+
+async def verify_token(authorization: str = Header()):
+    if authorization != f"Bearer {EXPECTED_TOKEN}":
+        raise HTTPException(401)
+```
+
+```javascript
+// Express example
+app.use('/api', (req, res, next) => {
+  if (req.headers.authorization !== `Bearer ${EXPECTED_TOKEN}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+});
+```
+
+3. **Ensure the API is reachable from the Asibot server** — if it runs on your company network, the Azure VM needs network access to it (VPN, peering, or internal DNS)
+
+### If your tool has no backend / no API
+
+You'll need to add a lightweight API layer. The fastest options:
+
+- **Python** — [FastAPI](https://fastapi.tiangolo.com/) can expose a few endpoints in ~30 lines
+- **Node.js** — [Express](https://expressjs.com/) with a few `app.get()`/`app.post()` routes
+- **Any language** — anything that serves HTTP and returns JSON works
+
+### What to expose
+
+You don't need to expose your entire tool. Start with the operations that are most useful in conversation:
+
+| Good first tools | Why |
+|-----------------|-----|
+| **Search / list** | Claude can find things for the user |
+| **Get details by ID** | Claude can look up specific records |
+| **Create** | Claude can create items on behalf of the user |
+
+You can always add more endpoints later. 3-5 focused endpoints are better than trying to expose everything at once.
+
+### Minimum requirements
+
+| Requirement | Details |
+|-------------|---------|
+| HTTP endpoint | Reachable from the Asibot server (e.g., `https://internal-tool.yourcompany.com/api/`) |
+| JSON responses | Standard `{"key": "value"}` format |
+| Authentication | API key, bearer token, or basic auth — anything per-user |
+| At least one read endpoint | e.g., `GET /api/items` returning a list |
+
+Once your tool has an API, the rest of this guide takes about 30 minutes.
+
+---
+
 ## What you'll create
 
 1. A connector file at `src/asibot/connectors/yourservice.py` (~50-150 lines)
