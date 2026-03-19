@@ -625,16 +625,30 @@ async def query_audit(
         return [dict(row) async for row in cur]
 
 
-async def query_audit_range(start: float, end: float) -> list[dict]:
-    """Return all audit entries within [start, end] timestamp range."""
+async def query_audit_range(
+    start: float, end: float, user_id: str | None = None,
+) -> list[dict]:
+    """Return all audit entries within [start, end] timestamp range.
+
+    If user_id is provided, only return entries for that user (dashboard scoping).
+    """
     db = _get_db()
     rows: list[dict] = []
-    async with db.execute(
-        "SELECT ts, user_id, tool, args_json, service, success, latency_ms,"
-        " error_type, event, metadata_json"
-        " FROM audit_log WHERE ts >= ? AND ts <= ? ORDER BY ts",
-        (start, end),
-    ) as cur:
+    if user_id is not None:
+        sql = (
+            "SELECT ts, user_id, tool, args_json, service, success, latency_ms,"
+            " error_type, event, metadata_json"
+            " FROM audit_log WHERE ts >= ? AND ts <= ? AND user_id = ? ORDER BY ts"
+        )
+        params: tuple = (start, end, user_id)
+    else:
+        sql = (
+            "SELECT ts, user_id, tool, args_json, service, success, latency_ms,"
+            " error_type, event, metadata_json"
+            " FROM audit_log WHERE ts >= ? AND ts <= ? ORDER BY ts"
+        )
+        params = (start, end)
+    async with db.execute(sql, params) as cur:
         async for row in cur:
             entry: dict = {"ts": row[0], "user": row[1] or "anonymous"}
             if row[2]:

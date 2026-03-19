@@ -9,6 +9,7 @@ import logging
 import secrets
 import stat
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -58,20 +59,42 @@ def _dashboard_host() -> str:
     return getattr(settings, "dashboard_host", "0.0.0.0")
 
 
-def _check_auth(request: Request) -> bool:
-    """Validate bearer token from header or query param."""
-    token = _load_or_create_token()
+@dataclass(frozen=True)
+class AuthContext:
+    """Result of dashboard authentication."""
+    role: str  # "admin" or "user"
+    user_id: str | None  # None for legacy admin token (full access)
 
-    # Check Authorization header
-    auth = request.headers.get("authorization", "")
-    if auth.startswith("Bearer ") and auth[7:].strip() == token:
-        return True
 
-    # Check query parameter
-    if request.query_params.get("token") == token:
-        return True
+def _check_auth(request: Request) -> AuthContext | None:
+    """Validate bearer token from header or query param.
 
-    return False
+    Returns AuthContext on success, None on failure.
+    Legacy static token → admin with no user scope.
+    Per-user token → role and user_id from token entry.
+    """
+    # Extract token
+    token = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        token = request.query_params.get("token")
+    if not token:
+        return None
+
+    # Check legacy static admin token
+    legacy = _load_or_create_token()
+    if token == legacy:
+        return AuthContext(role="admin", user_id=None)
+
+    # Check per-user dashboard token
+    from asibot import dashboard_tokens
+    entry = dashboard_tokens.validate_token(token)
+    if entry is not None:
+        return AuthContext(role=entry.role, user_id=entry.user_id)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -82,14 +105,15 @@ _cache: dict[int, tuple[dict, float]] = {}
 _CACHE_TTL = 60  # seconds
 
 
-async def _get_cached_summary(days: int) -> dict:
+async def _get_cached_summary(days: int, user_id: str | None = None) -> dict:
+    cache_key = (days, user_id)
     now = time.time()
-    if days in _cache:
-        result, ts = _cache[days]
+    if cache_key in _cache:
+        result, ts = _cache[cache_key]
         if now - ts < _CACHE_TTL:
             return result
-    result = await get_summary(days=days)
-    _cache[days] = (result, now)
+    result = await get_summary(days=days, user_id=user_id)
+    _cache[cache_key] = (result, now)
     return result
 
 
@@ -122,7 +146,7 @@ def _read_html() -> str:
 
 
 async def index(request: Request) -> Response:
-    if not _check_auth(request):
+    if _check_auth(request) is None:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return HTMLResponse(_read_html())
 
@@ -132,11 +156,13 @@ async def health(request: Request) -> Response:
 
 
 async def api_summary(request: Request) -> Response:
-    if not _check_auth(request):
+    ctx = _check_auth(request)
+    if ctx is None:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     days = _parse_days(request)
-    s = await _get_cached_summary(days)
+    scope_user = None if ctx.role == "admin" else ctx.user_id
+    s = await _get_cached_summary(days, user_id=scope_user)
 
     time_saved = s.get("time_saved_minutes", 0)
     return JSONResponse({
@@ -159,11 +185,13 @@ async def api_summary(request: Request) -> Response:
 
 
 async def api_usage(request: Request) -> Response:
-    if not _check_auth(request):
+    ctx = _check_auth(request)
+    if ctx is None:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     days = _parse_days(request)
-    s = await _get_cached_summary(days)
+    scope_user = None if ctx.role == "admin" else ctx.user_id
+    s = await _get_cached_summary(days, user_id=scope_user)
 
     return JSONResponse({
         "calls_by_day": s.get("calls_by_day", []),
@@ -174,11 +202,13 @@ async def api_usage(request: Request) -> Response:
 
 
 async def api_services(request: Request) -> Response:
-    if not _check_auth(request):
+    ctx = _check_auth(request)
+    if ctx is None:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     days = _parse_days(request)
-    s = await _get_cached_summary(days)
+    scope_user = None if ctx.role == "admin" else ctx.user_id
+    s = await _get_cached_summary(days, user_id=scope_user)
 
     calls_by_service = s.get("calls_by_service", {})
     errors_by_service = s.get("errors_by_service", {})
@@ -215,11 +245,13 @@ async def api_services(request: Request) -> Response:
 
 
 async def api_users(request: Request) -> Response:
-    if not _check_auth(request):
+    ctx = _check_auth(request)
+    if ctx is None:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     days = _parse_days(request)
-    s = await _get_cached_summary(days)
+    scope_user = None if ctx.role == "admin" else ctx.user_id
+    s = await _get_cached_summary(days, user_id=scope_user)
 
     top_users = s.get("top_users", [])
     calls_by_user = s.get("calls_by_user", {})
@@ -250,11 +282,13 @@ async def api_users(request: Request) -> Response:
 
 
 async def api_errors(request: Request) -> Response:
-    if not _check_auth(request):
+    ctx = _check_auth(request)
+    if ctx is None:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     days = _parse_days(request)
-    s = await _get_cached_summary(days)
+    scope_user = None if ctx.role == "admin" else ctx.user_id
+    s = await _get_cached_summary(days, user_id=scope_user)
 
     return JSONResponse({
         "error_count": s.get("error_count", 0),

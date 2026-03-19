@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     dashboard_port: int = 8081
     dashboard_enabled: bool = True
     dashboard_bearer_token: str = ""  # optional Bearer token for dashboard auth
+    dashboard_token_ttl: int = 86400  # per-user token TTL in seconds (default 24h)
+    dashboard_min_role: str = "user"  # minimum role to access dashboard ("user" or "admin")
+
+    # Azure AD role sync
+    admin_group_id: str = ""  # Azure AD security group ID — members get admin role
 
     # Database / sessions
     db_pool_size: int = 10

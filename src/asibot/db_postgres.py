@@ -830,21 +830,38 @@ class PostgresBackend:
         return _records_to_dicts(rows)
 
     async def query_audit_range(
-        self, start: float, end: float
+        self, start: float, end: float, user_id: str | None = None,
     ) -> list[dict]:
-        """Return all audit entries within [start, end] timestamp range."""
+        """Return all audit entries within [start, end] timestamp range.
+
+        If user_id is provided, only return entries for that user (dashboard scoping).
+        """
         pool = self._get_read_pool()
-        rows = await pool.fetch(
-            """
-            SELECT ts, user_id, tool, args_json, service, success, latency_ms,
-                   error_type, event, metadata_json
-            FROM audit_log
-            WHERE ts >= $1 AND ts <= $2
-            ORDER BY ts
-            """,
-            start,
-            end,
-        )
+        if user_id is not None:
+            rows = await pool.fetch(
+                """
+                SELECT ts, user_id, tool, args_json, service, success, latency_ms,
+                       error_type, event, metadata_json
+                FROM audit_log
+                WHERE ts >= $1 AND ts <= $2 AND user_id = $3
+                ORDER BY ts
+                """,
+                start,
+                end,
+                user_id,
+            )
+        else:
+            rows = await pool.fetch(
+                """
+                SELECT ts, user_id, tool, args_json, service, success, latency_ms,
+                       error_type, event, metadata_json
+                FROM audit_log
+                WHERE ts >= $1 AND ts <= $2
+                ORDER BY ts
+                """,
+                start,
+                end,
+            )
         results: list[dict] = []
         for row in rows:
             entry: dict[str, Any] = {

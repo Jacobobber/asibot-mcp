@@ -21,6 +21,7 @@ GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 # Read-only MS365 scopes (List 1)
 SCOPES = (
     "User.Read "
+    "GroupMember.Read.All "  # Azure AD group membership for role sync
     "Sites.Read.All "
     "Files.Read.All "
     "Mail.Read "

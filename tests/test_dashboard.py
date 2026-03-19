@@ -178,7 +178,7 @@ def test_summary_days_param(client: TestClient):
     with patch.object(mod, "_get_cached_summary", return_value=MOCK_SUMMARY) as mock_get:
         resp = client.get("/api/summary", params={"token": TOKEN, "days": "7"})
         assert resp.status_code == 200
-        mock_get.assert_called_once_with(7)
+        mock_get.assert_called_once_with(7, user_id=None)
 
 
 def test_usage_endpoint(client: TestClient):
@@ -294,7 +294,7 @@ def test_days_param_max(client: TestClient):
     with patch.object(mod, "_get_cached_summary", return_value=MOCK_SUMMARY) as mock_get:
         resp = client.get("/api/summary", params={"token": TOKEN, "days": "999"})
         assert resp.status_code == 200
-        mock_get.assert_called_once_with(365)
+        mock_get.assert_called_once_with(365, user_id=None)
 
 
 def test_days_param_invalid(client: TestClient):
@@ -304,4 +304,4 @@ def test_days_param_invalid(client: TestClient):
     with patch.object(mod, "_get_cached_summary", return_value=MOCK_SUMMARY) as mock_get:
         resp = client.get("/api/summary", params={"token": TOKEN, "days": "abc"})
         assert resp.status_code == 200
-        mock_get.assert_called_once_with(30)
+        mock_get.assert_called_once_with(30, user_id=None)

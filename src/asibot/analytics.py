@@ -266,8 +266,11 @@ def get_adoption_trend(events: list[dict], days: int = 90) -> list[dict]:
     return trend
 
 
-async def get_summary(days: int = 30) -> dict:
+async def get_summary(days: int = 30, user_id: str | None = None) -> dict:
     """Query audit DB and compute metrics for last N days.
+
+    If user_id is provided, results are scoped to that user only
+    (for non-admin dashboard views).
 
     Returns the compute_metrics() result plus:
     - period_start: ISO date string
@@ -284,7 +287,7 @@ async def get_summary(days: int = 30) -> dict:
 
     # For adoption trend we need all events (including before the window)
     # to compute cumulative users correctly
-    all_events = await db.query_audit_range(0, end_ts)
+    all_events = await db.query_audit_range(0, end_ts, user_id=user_id)
 
     metrics = compute_metrics(all_events, start_ts, end_ts)
     adoption = get_adoption_trend(all_events, days=days)

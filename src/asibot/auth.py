@@ -27,14 +27,23 @@ def _save() -> None:
     save_encrypted(_store_path, _users)
 
 
-def create_user(email: str, name: str) -> dict:
-    """Create a new user or return existing one by email."""
+def create_user(email: str, name: str, role: str = "user") -> dict:
+    """Create a new user or return existing one by email.
+
+    If the user already exists and the role differs, update it (supports
+    re-setup syncing from M365 groups).
+    """
     _load()
 
     # Check if user already exists
     for key, user in _users.items():
         if user["user_id"] == email:
-            logger.info("User already exists: %s", email)
+            if user.get("role") != role:
+                user["role"] = role
+                _save()
+                logger.info("Updated role for %s to %s", email, role)
+            else:
+                logger.info("User already exists: %s", email)
             return user
 
     api_key = f"asb_{secrets.token_urlsafe(32)}"
@@ -42,11 +51,12 @@ def create_user(email: str, name: str) -> dict:
         "user_id": email,
         "name": name,
         "api_key": api_key,
+        "role": role,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _users[api_key] = user
     _save()
-    logger.info("Created user: %s (%s)", name, email)
+    logger.info("Created user: %s (%s) role=%s", name, email, role)
     return user
 
 
@@ -88,3 +98,31 @@ def list_users() -> list[dict]:
     """List all registered users."""
     _load()
     return list(_users.values())
+
+
+def get_role(email: str) -> str:
+    """Get the role for a user. Returns 'user' if not set or user not found."""
+    user = get_user_by_email(email)
+    if not user:
+        return "user"
+    return user.get("role", "user")
+
+
+def set_role(email: str, role: str) -> dict | None:
+    """Set the role for a user. Returns updated user or None if not found."""
+    from asibot.roles import VALID_ROLES
+
+    if role not in VALID_ROLES:
+        return None
+    user = get_user_by_email(email)
+    if not user:
+        return None
+    user["role"] = role
+    _save()
+    return user
+
+
+def count_admins() -> int:
+    """Count users with admin role."""
+    _load()
+    return sum(1 for u in _users.values() if u.get("role") == "admin")

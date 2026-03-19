@@ -580,6 +580,13 @@ def _ensure_cleanup_tasks() -> None:
     _schedule_periodic(_cleanup_ms_clients, 300, "ms-client-cleanup")
     _schedule_periodic(_prune_audit, 3600, "audit-prune")
     _schedule_periodic(_cleanup_sessions, 300, "session-cleanup")
+    _schedule_periodic(_cleanup_dashboard_tokens, 300, "dashboard-token-cleanup")
+
+
+async def _cleanup_dashboard_tokens() -> None:
+    """Remove expired dashboard access tokens."""
+    from asibot import dashboard_tokens
+    dashboard_tokens.cleanup_expired()
 
 
 async def _cleanup_rate_limits() -> None:
@@ -694,7 +701,26 @@ async def _complete_setup(
 
         email = profile.get("mail") or profile.get("userPrincipalName", "unknown")
         name = profile.get("displayName", email)
-        user = await auth.create_user(email, name)
+
+        # Sync role from Azure AD group membership
+        role = "user"
+        if settings.admin_group_id:
+            try:
+                async with httpx.AsyncClient() as http:
+                    groups_resp = await http.get(
+                        "https://graph.microsoft.com/v1.0/me/memberOf",
+                        headers={"Authorization": f"Bearer {data['access_token']}"},
+                    )
+                    groups_resp.raise_for_status()
+                    group_ids = [
+                        g.get("id", "") for g in groups_resp.json().get("value", [])
+                    ]
+                    if settings.admin_group_id in group_ids:
+                        role = "admin"
+            except Exception:
+                logger.debug("Failed to check group membership for %s", email)
+
+        user = await auth.create_user(email, name, role=role)
         try:
             await db.log_event(email, "user_created")
         except Exception:
@@ -948,6 +974,59 @@ async def asibot_whoami(ctx: Context) -> str:
     if user:
         return f"Authenticated as {user['name']} ({user['user_id']})"
     return f"Authenticated as {user_id}"
+
+
+@mcp.tool()
+@concurrency_limited()
+async def asibot_dashboard_login(ctx: Context) -> str:
+    """Get a personal link to the Asibot analytics dashboard.
+
+    Generates a time-limited dashboard access token for your account.
+    Admins see org-wide analytics; regular users see their own activity.
+    """
+    from asibot import dashboard_tokens, roles
+
+    user_id, err = user_session.require_user(ctx)
+    if err:
+        return err
+
+    user = auth.get_user_by_email(user_id)
+    if not user:
+        return "User not found. Run asibot_setup first."
+
+    user_role = user.get("role", "user")
+
+    # Check minimum role requirement
+    if not roles.has_permission(user_role, settings.dashboard_min_role):
+        return (
+            "Dashboard access requires higher privileges. "
+            "Contact your Asibot administrator to request access."
+        )
+
+    token = dashboard_tokens.create_token(
+        user_id=user_id,
+        user_name=user.get("name", user_id),
+        role=user_role,
+        ttl_seconds=settings.dashboard_token_ttl,
+    )
+
+    host = getattr(settings, "dashboard_host", "0.0.0.0")
+    port = getattr(settings, "dashboard_port", 8081)
+    display_host = "localhost" if host == "0.0.0.0" else host
+    url = f"http://{display_host}:{port}/?token={token}"
+
+    try:
+        await db.log_event(user_id, "dashboard_token_created")
+    except Exception:
+        pass
+
+    ttl_hours = settings.dashboard_token_ttl // 3600
+    scope = "full org dashboard" if user_role == "admin" else "your personal activity dashboard"
+    return (
+        f"Here's your {scope} link (valid for {ttl_hours}h):\n\n"
+        f"{url}\n\n"
+        f"This link is tied to your account and will expire automatically."
+    )
 
 
 @mcp.tool()
