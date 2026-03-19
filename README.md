@@ -142,31 +142,31 @@ Automatically assign admin roles from Azure AD group membership:
 
 When users sign in, the server checks group membership and assigns `admin` or `user` role automatically.
 
-### 3. Configuration
+### 3. Configure and Deploy
+
+Docker Compose handles everything — PostgreSQL, PgBouncer, Redis, Nginx, Prometheus, and Asibot itself. The database schema is created automatically on first start. You just set a few environment variables:
 
 ```bash
 cp .env.example .env
+# Edit .env with your values, then:
+docker compose up --build -d
 ```
 
-**Required:**
+**Required `.env` settings:**
 
 ```env
-ASIBOT_TRANSPORT=streamable-http
-ASIBOT_PORT=8080
-ASIBOT_ALLOW_INSECURE_HTTP=true          # Only behind a TLS reverse proxy
-ASIBOT_MS365_TENANT_ID=your-tenant-id
-ASIBOT_MS365_CLIENT_ID=your-client-id
-ASIBOT_DATABASE_URL=postgresql://asibot:YOUR_PASSWORD@pgbouncer:6432/asibot
-POSTGRES_PASSWORD=YOUR_PASSWORD
+POSTGRES_PASSWORD=your-secure-password          # Used by PostgreSQL and Asibot
+ASIBOT_MS365_TENANT_ID=your-tenant-id           # From step 1
+ASIBOT_MS365_CLIENT_ID=your-client-id           # From step 1
 ```
 
-**Recommended:**
+That's it for a working deployment. Everything else has sensible defaults. The compose stack brings up PostgreSQL 16, PgBouncer (connection pooling), Redis (distributed cache), Nginx (TLS + rate limiting), Prometheus, and AlertManager automatically.
+
+**Recommended additions:**
 
 ```env
-ASIBOT_ADMIN_GROUP_ID=your-security-group-id    # Azure AD role sync
-ASIBOT_SESSION_BACKEND=redis                     # Required for multi-replica
-ASIBOT_REDIS_URL=redis://redis:6379/0
-ASIBOT_METRICS_BEARER_TOKEN=your-secret          # Secure metrics endpoint
+ASIBOT_ADMIN_GROUP_ID=your-security-group-id    # Azure AD role sync (step 2)
+ASIBOT_METRICS_BEARER_TOKEN=your-secret         # Secure the metrics endpoint
 ASIBOT_SHAREPOINT_SITE_URL=yourcompany.sharepoint.com
 ```
 
@@ -178,7 +178,7 @@ ASIBOT_GOOGLE_CLIENT_ID=your-google-client-id
 ASIBOT_GOOGLE_CLIENT_SECRET=your-google-secret
 ```
 
-**Optional — business defaults** (so users only provide personal tokens):
+**Optional — business defaults** (pre-fill org-level settings so users only provide personal tokens):
 
 ```env
 ASIBOT_GITHUB_ORG=mycompany
@@ -187,21 +187,7 @@ ASIBOT_ZENDESK_SUBDOMAIN=mycompany
 ASIBOT_SALESFORCE_INSTANCE_URL=https://mycompany.my.salesforce.com
 ```
 
-### 4. Deploy
-
-**Development:**
-
-```bash
-docker compose -f docker-compose.dev.yml up --build -d
-```
-
-**Production** (includes PostgreSQL, PgBouncer, Redis, Nginx with TLS, Prometheus, AlertManager):
-
-```bash
-docker compose up --build -d
-```
-
-TLS certs at `deploy/certs/cert.pem` and `deploy/certs/key.pem`, or set `TLS_CERT_PATH`/`TLS_KEY_PATH`.
+**TLS:** Place certificates at `deploy/certs/cert.pem` and `deploy/certs/key.pem`, or set `TLS_CERT_PATH`/`TLS_KEY_PATH` in `.env`. Alternatively, terminate TLS at Azure Application Gateway and set `ASIBOT_ALLOW_INSECURE_HTTP=true`.
 
 **High availability** (adds PostgreSQL streaming replication):
 
@@ -209,10 +195,10 @@ TLS certs at `deploy/certs/cert.pem` and `deploy/certs/key.pem`, or set `TLS_CER
 docker compose -f docker-compose.yml -f docker-compose.ha.yml up --build -d
 ```
 
-### 5. Verify
+### 4. Verify
 
 ```bash
-curl http://localhost:8080/health
+curl https://asibot.yourcompany.com/health
 docker compose logs asibot | grep "dashboard"   # grab the dashboard URL
 ```
 
