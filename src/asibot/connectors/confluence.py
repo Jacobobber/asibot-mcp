@@ -58,7 +58,7 @@ class ConfluenceConnector(Connector):
             """Search Confluence pages and content.
 
             Args:
-                query: Search query (CQL or text)
+                query: Search query text
                 limit: Max results (default: 10)
             """
             err = validation.validate_query(query, "query")
@@ -68,7 +68,7 @@ class ConfluenceConnector(Connector):
             client, uid, err = await token_store.require_service(ctx, "atlassian", _make_client, "read")
             if err:
                 return err
-            cql = query if "=" in query else f'text ~ "{_escape_cql_value(query)}"'
+            cql = f'text ~ "{_escape_cql_value(query)}"'
             r, err = await token_store.safe_request(
                 client, "GET", "/content/search",
                 service="Confluence", action="search",

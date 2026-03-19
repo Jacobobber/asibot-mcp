@@ -15,6 +15,25 @@ logger = logging.getLogger(__name__)
 _MAX_S2S_CACHE = 200  # LRU eviction threshold for in-memory S2S token cache
 
 
+def _sanitize_url(url: str) -> str:
+    """Mask credentials in a URL for safe logging."""
+    from urllib.parse import urlparse, urlunparse
+
+    try:
+        parsed = urlparse(url)
+        if parsed.password:
+            masked = parsed._replace(
+                netloc="{}:***@{}".format(
+                    parsed.username or "",
+                    parsed.hostname + (":{}".format(parsed.port) if parsed.port else ""),
+                )
+            )
+            return urlunparse(masked)
+        return url
+    except Exception:
+        return "<url>"
+
+
 class DistributedCache(ABC):
     """Abstract base class for distributed cache backends."""
 
@@ -161,7 +180,7 @@ async def create_distributed_cache() -> DistributedCache:
             client = redis.Redis.from_url(redis_url, decode_responses=True)
             # Verify connectivity
             client.ping()
-            logger.info("Distributed cache: Redis (%s)", redis_url)
+            logger.info("Distributed cache: Redis (%s)", _sanitize_url(redis_url))
             return RedisCache(client)
         except ImportError:
             logger.warning("redis package not installed, falling back to in-memory cache")

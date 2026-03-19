@@ -15,7 +15,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from asibot import audit, auth, db, http_pool, metrics, migrate, token_store, user_session
 from asibot.connectors import microsoft
-from asibot.config import settings, validate_for_production
+from asibot.config import production_errors, settings, validate_for_production
 from asibot.connectors import registry
 
 logging.basicConfig(
@@ -346,7 +346,7 @@ def _on_task_done(task: asyncio.Task, setup_id: str) -> None:
         # Done callbacks are synchronous — schedule a locked write + DB persist
         state = {
             "status": "failed",
-            "error": f"Internal error: {exc}",
+            "error": "Setup failed due to an internal error. Please try again or contact your admin.",
             "_created_at": time.time(),
         }
         task.get_loop().create_task(_set_pending_setup(setup_id, state))
@@ -500,12 +500,12 @@ async def _poll_device_code(
             try:
                 result = await on_success(data)
             except Exception as e:
+                logger.error("%s setup failed: %s", display_name, e)
                 await _set_pending_setup(setup_id, {
                     "status": "failed",
-                    "error": f"{display_name} setup failed: {e}",
+                    "error": f"{display_name} setup failed. Please try again or contact your admin.",
                     "_created_at": time.time(),
                 })
-                logger.error("%s setup failed: %s", display_name, e)
                 return
 
             await _set_pending_setup(setup_id, result)
@@ -1172,6 +1172,15 @@ def _start_dashboard() -> None:
 
 def main() -> None:
     settings.ensure_dirs()
+
+    # Check for fatal misconfigurations that must prevent startup
+    errors = production_errors(settings)
+    if errors:
+        for err in errors:
+            logger.error("CONFIG ERROR: %s", err)
+        raise ValueError(
+            "Fatal configuration errors:\n  - " + "\n  - ".join(errors)
+        )
 
     # Log production warnings (non-fatal)
     for warning in validate_for_production(settings):

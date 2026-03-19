@@ -45,8 +45,8 @@ def _load_or_create_token() -> str:
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         token_path.write_text(_TOKEN + "\n")
         token_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
-        logger.info("Dashboard token created: %s", _TOKEN)
-        logger.info("Access dashboard at: http://localhost:%s/?token=%s", _dashboard_port(), _TOKEN)
+        logger.debug("Dashboard token created: %s...", _TOKEN[:8])
+        logger.debug("Dashboard access: http://localhost:%s/?token=<see %s>", _dashboard_port(), token_path)
 
     return _TOKEN
 

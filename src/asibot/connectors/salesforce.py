@@ -11,6 +11,14 @@ from asibot.connectors.pagination import collect, paginate_salesforce
 
 logger = logging.getLogger(__name__)
 
+# SOSL reserved characters that must be escaped with a backslash
+_SOSL_SPECIAL = set(r"""?&|!{}[]()^~*:\\"'+-""")
+
+
+def _escape_sosl(value: str) -> str:
+    """Escape special characters for safe use in a SOSL FIND clause."""
+    return "".join(f"\\{ch}" if ch in _SOSL_SPECIAL else ch for ch in value)
+
 
 class SalesforceConnector(Connector):
     def __init__(self, config=None):
@@ -42,7 +50,7 @@ class SalesforceConnector(Connector):
             client, uid, err = await token_store.require_service(ctx, "salesforce", level="read")
             if err:
                 return err
-            sosl = f"FIND {{{query}}} IN ALL FIELDS RETURNING Account(Name, Id), Contact(Name, Email, Id), Opportunity(Name, StageName, Amount, Id) LIMIT {limit}"
+            sosl = f"FIND {{{_escape_sosl(query)}}} IN ALL FIELDS RETURNING Account(Name, Id), Contact(Name, Email, Id), Opportunity(Name, StageName, Amount, Id) LIMIT {limit}"
             r, err = await token_store.safe_request(
                 client, "GET", "/search",
                 service="Salesforce", action="search",

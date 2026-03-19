@@ -1,4 +1,4 @@
-"""Tests for retry/backoff logic in safe_request and per-user rate limiting integration."""
+"""Tests for retry/backoff logic in safe_request, per-user rate limiting, and security fixes."""
 
 import asyncio
 import time
@@ -345,3 +345,122 @@ class TestRetryMaxRetries:
         assert "502" in err
         # 1 initial + 1 retry = 2 calls
         assert client.request.call_count == 2
+
+
+class TestCQLInjectionBlocked:
+    """Verify that CQL injection via the '=' bypass is no longer possible."""
+
+    def _register_tools(self):
+        from asibot.connectors.confluence import ConfluenceConnector
+        mcp = MagicMock()
+        tools = {}
+        mcp.tool = lambda: lambda f: tools.setdefault(f.__name__, f) or f
+        ConfluenceConnector().register_tools(mcp)
+        return tools
+
+    @pytest.mark.asyncio
+    async def test_equals_in_query_is_escaped_not_passed_raw(self):
+        """A query containing '=' must be escaped, not treated as raw CQL."""
+        from asibot.connectors.confluence import _escape_cql_value
+
+        tools = self._register_tools()
+        malicious_query = 'text = foo" OR id >= 0 OR text ~ "'
+
+        resp = _mock_response(200, {"results": []})
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.request = AsyncMock(return_value=resp)
+
+        ctx = MagicMock()
+        with patch.object(
+            token_store, "require_service",
+            new_callable=AsyncMock,
+            return_value=(client, "test@example.com", None),
+        ), patch.object(
+            token_store, "safe_request",
+            new_callable=AsyncMock,
+            return_value=(resp, None),
+        ) as mock_safe_request:
+            await tools["confluence_search"](malicious_query, ctx)
+
+        # Verify safe_request was called with properly escaped CQL
+        call_kwargs = mock_safe_request.call_args
+        cql_param = call_kwargs.kwargs.get("params", {}).get("cql") or call_kwargs[1].get("params", {}).get("cql")
+        expected_cql = f'text ~ "{_escape_cql_value(malicious_query)}"'
+        assert cql_param == expected_cql, (
+            f"Expected escaped CQL but got: {cql_param}"
+        )
+        # The raw malicious query must NOT appear as the CQL value
+        assert cql_param != malicious_query
+
+    @pytest.mark.asyncio
+    async def test_normal_query_with_equals_is_safe(self):
+        """Even innocent queries with '=' should be escaped."""
+        from asibot.connectors.confluence import _escape_cql_value
+
+        tools = self._register_tools()
+        query = "a=b"
+
+        resp = _mock_response(200, {"results": []})
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.request = AsyncMock(return_value=resp)
+
+        ctx = MagicMock()
+        with patch.object(
+            token_store, "require_service",
+            new_callable=AsyncMock,
+            return_value=(client, "test@example.com", None),
+        ), patch.object(
+            token_store, "safe_request",
+            new_callable=AsyncMock,
+            return_value=(resp, None),
+        ) as mock_safe_request:
+            await tools["confluence_search"](query, ctx)
+
+        call_kwargs = mock_safe_request.call_args
+        cql_param = call_kwargs.kwargs.get("params", {}).get("cql") or call_kwargs[1].get("params", {}).get("cql")
+        expected_cql = f'text ~ "{_escape_cql_value(query)}"'
+        assert cql_param == expected_cql
+        # Must be wrapped in text ~ "...", not passed raw
+        assert cql_param.startswith('text ~ "')
+
+
+# --- SOSL Escaping Tests ---
+
+
+class TestSOSLEscaping:
+    """Verify _escape_sosl escapes SOSL reserved characters."""
+
+    def test_escape_special_chars(self):
+        from asibot.connectors.salesforce import _escape_sosl
+        assert _escape_sosl("test?query") == "test\\?query"
+        assert _escape_sosl("test&query") == "test\\&query"
+        assert _escape_sosl("test|query") == "test\\|query"
+        assert _escape_sosl("test!query") == "test\\!query"
+        assert _escape_sosl("test{query}") == "test\\{query\\}"
+        assert _escape_sosl("test[query]") == "test\\[query\\]"
+        assert _escape_sosl("test(query)") == "test\\(query\\)"
+        assert _escape_sosl("test^query") == "test\\^query"
+        assert _escape_sosl("test~query") == "test\\~query"
+        assert _escape_sosl("test*query") == "test\\*query"
+        assert _escape_sosl("test:query") == "test\\:query"
+        assert _escape_sosl("test\\query") == "test\\\\query"
+        assert _escape_sosl('test"query') == 'test\\"query'
+        assert _escape_sosl("test'query") == "test\\'query"
+        assert _escape_sosl("test+query") == "test\\+query"
+        assert _escape_sosl("test-query") == "test\\-query"
+
+    def test_plain_text_unescaped(self):
+        from asibot.connectors.salesforce import _escape_sosl
+        assert _escape_sosl("hello world") == "hello world"
+        assert _escape_sosl("simple") == "simple"
+        assert _escape_sosl("Acme Corp") == "Acme Corp"
+
+    def test_multiple_special_chars(self):
+        from asibot.connectors.salesforce import _escape_sosl
+        user_input = 'test+injection"attempt{escape}'
+        escaped = _escape_sosl(user_input)
+        assert escaped == 'test\\+injection\\"attempt\\{escape\\}'
+
+    def test_empty_string(self):
+        from asibot.connectors.salesforce import _escape_sosl
+        assert _escape_sosl("") == ""

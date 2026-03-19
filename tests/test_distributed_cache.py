@@ -15,6 +15,7 @@ from asibot.distributed_cache import (
     init_cache,
     get_cache,
     _MAX_S2S_CACHE,
+    _sanitize_url,
 )
 
 
@@ -222,6 +223,48 @@ class TestRedisCacheRateLimit:
     async def test_cleanup_is_noop(self, cache):
         # Redis handles TTL automatically
         await cache.cleanup()  # should not raise
+
+
+# ---- URL Sanitization Tests ----
+
+
+class TestSanitizeUrl:
+    def test_masks_password_in_redis_url(self):
+        url = "redis://:s3cret@redis.example.com:6379/0"
+        result = _sanitize_url(url)
+        assert "s3cret" not in result
+        assert "***" in result
+        assert "redis.example.com" in result
+        assert "6379" in result
+
+    def test_masks_user_and_password(self):
+        url = "redis://admin:p@ssw0rd@redis.example.com:6379/0"
+        result = _sanitize_url(url)
+        assert "p@ssw0rd" not in result
+        assert "admin:***@redis.example.com:6379" in result
+
+    def test_no_password_returns_unchanged(self):
+        url = "redis://redis.example.com:6379/0"
+        result = _sanitize_url(url)
+        assert result == url
+
+    def test_no_password_localhost(self):
+        url = "redis://localhost:6379/0"
+        result = _sanitize_url(url)
+        assert result == url
+
+    def test_postgres_url_masked(self):
+        url = "postgresql://user:secret@db.example.com:5432/mydb"
+        result = _sanitize_url(url)
+        assert "secret" not in result
+        assert "***" in result
+        assert "db.example.com" in result
+
+    def test_garbage_input_returns_fallback(self):
+        # Non-URL strings without a scheme still parse, but test the except path
+        # by giving something that could trip up urlparse
+        result = _sanitize_url("")
+        assert result == ""  # empty string has no password, returned as-is
 
 
 # ---- Factory Tests ----

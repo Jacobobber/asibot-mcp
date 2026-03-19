@@ -4,7 +4,7 @@ import warnings
 
 import pytest
 
-from asibot.config import Settings, validate_for_production
+from asibot.config import Settings, production_errors, validate_for_production
 
 
 def _make(**overrides) -> Settings:
@@ -353,10 +353,11 @@ class TestProductionWarnings:
         warns = validate_for_production(s)
         assert warns == []
 
-    def test_allow_insecure_http_warning(self):
+    def test_allow_insecure_http_not_in_warnings(self):
+        """allow_insecure_http is a hard error (production_errors), not a warning."""
         s = _make(allow_insecure_http=True)
         warns = validate_for_production(s)
-        assert any("allow_insecure_http" in w for w in warns)
+        assert not any("allow_insecure_http" in w for w in warns)
 
     def test_dashboard_without_token_warning(self):
         s = _make(dashboard_enabled=True, dashboard_bearer_token="")
@@ -409,7 +410,8 @@ class TestProductionWarnings:
             pg_pool_max_size=10,
         )
         warns = validate_for_production(s)
-        assert len(warns) == 4
+        # allow_insecure_http is now a hard error (production_errors), not a warning
+        assert len(warns) == 3
 
 
 # ---- Edge cases ----
@@ -445,3 +447,33 @@ class TestEdgeCases:
     def test_audit_retention_one_day(self):
         s = _make(audit_retention_days=1)
         assert s.audit_retention_days == 1
+
+
+# ---- Production Errors (production_errors — hard failures) ----
+
+
+class TestProductionErrors:
+    def test_insecure_http_with_http_transport_is_fatal(self):
+        s = _make(allow_insecure_http=True, transport="streamable-http")
+        errs = production_errors(s)
+        assert len(errs) == 1
+        assert "FATAL" in errs[0]
+        assert "allow_insecure_http" in errs[0]
+
+    def test_insecure_http_with_stdio_not_fatal(self):
+        """stdio transport doesn't transmit over HTTP, so not dangerous."""
+        s = _make(allow_insecure_http=True, transport="stdio")
+        errs = production_errors(s)
+        assert errs == []
+
+    def test_secure_http_transport_no_error(self):
+        s = _make(allow_insecure_http=False, transport="streamable-http")
+        errs = production_errors(s)
+        assert errs == []
+
+    def test_session_backend_memory_not_a_hard_error(self):
+        """session_backend=memory is handled elsewhere, not in production_errors."""
+        s = _make(session_backend="memory", transport="streamable-http")
+        errs = production_errors(s)
+        # Should not contain any session_backend errors
+        assert not any("session_backend" in e for e in errs)

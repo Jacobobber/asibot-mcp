@@ -300,6 +300,18 @@ class Settings(BaseSettings):
         return warns
 
 
+def production_errors(s: Settings) -> list[str]:
+    """Return fatal production misconfigurations that must block startup."""
+    errors: list[str] = []
+    if s.allow_insecure_http and s.transport == "streamable-http":
+        errors.append(
+            "FATAL: allow_insecure_http=True with HTTP transport — "
+            "API keys would be transmitted in plaintext for all users. "
+            "Set ASIBOT_ALLOW_INSECURE_HTTP=false or use a TLS-terminating proxy."
+        )
+    return errors
+
+
 def validate_for_production(s: Settings) -> list[str]:
     """Return a list of warnings for production-risky configuration.
 
@@ -307,12 +319,6 @@ def validate_for_production(s: Settings) -> list[str]:
     indicate settings that are unsafe or under-provisioned for production.
     """
     warns: list[str] = []
-
-    if s.allow_insecure_http:
-        warns.append(
-            "allow_insecure_http=True — API keys will be transmitted in plaintext. "
-            "Use a TLS-terminating reverse proxy in production."
-        )
 
     if s.dashboard_enabled and not s.dashboard_bearer_token:
         warns.append(
