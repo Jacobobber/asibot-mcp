@@ -1,0 +1,5 @@
+; PgBouncer userlist — format: "username" "password"
+; Replace the password below with the hashed or plain password matching POSTGRES_PASSWORD.
+; For md5 auth, use: "username" "md5<md5hash of password+username>"
+; Example:  "asibot" "md5abcdef1234567890abcdef12345678"
+"asibot" "asibot"

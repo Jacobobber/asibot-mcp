@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: asibot
+      POSTGRES_USER: asibot
+      POSTGRES_PASSWORD: devpass
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asibot"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  asibot:
+    build: .
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    environment:
+      - ASIBOT_TRANSPORT=streamable-http
+      - ASIBOT_ALLOW_INSECURE_HTTP=true
+      - ASIBOT_DATABASE_URL=postgresql://asibot:devpass@postgres:5432/asibot
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pg-data:

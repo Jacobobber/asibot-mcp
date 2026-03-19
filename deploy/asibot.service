@@ -1,0 +1,17 @@
+[Unit]
+Description=Asibot MCP Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/asibot
+Environment=ASIBOT_DATA_DIR=/var/lib/asibot
+Environment=ASIBOT_TRANSPORT=streamable-http
+Restart=on-failure
+RestartSec=5
+User=asibot
+Group=asibot
+ProtectSystem=strict
+ReadWritePaths=/var/lib/asibot
+
+[Install]
+WantedBy=multi-user.target
