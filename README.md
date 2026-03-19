@@ -16,8 +16,6 @@ Claude walks you through Microsoft SSO sign-in. After that, just talk:
 
 > **Search SharePoint for the Q4 budget deck.**
 
-> **Get me a dashboard link.**
-
 ---
 
 ## What You Can Do
@@ -106,7 +104,6 @@ Everything is managed through conversation:
 - **"What services am I connected to?"** — see all active connections
 - **"Disconnect Salesforce"** — remove stored credentials
 - **"Set GitHub to read-only"** — control access levels per service
-- **"Get me a dashboard link"** — personal analytics (admins see org-wide, users see their own)
 - **"Rotate my API key"** — generate a new key, old one stops immediately
 
 ---
@@ -198,8 +195,7 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up --build -d
 ### 4. Verify
 
 ```bash
-curl https://asibot.yourcompany.com/health
-docker compose logs asibot | grep "dashboard"   # grab the dashboard URL
+curl https://your-server/health
 ```
 
 ---
@@ -241,7 +237,7 @@ docker compose logs asibot | grep "dashboard"   # grab the dashboard URL
 
 **Caching** — Three layers: Redis distributed cache for S2S OAuth tokens and rate limit counters, in-memory session store (10K LRU cap), and HTTP connection pool. Falls back gracefully — Redis unavailable → in-memory, no data loss.
 
-**Observability** — Prometheus metrics (request latency histograms, error counters, circuit state gauges, session cache hit rates), AlertManager rules (error rate, circuit open, auth spikes, latency), and a built-in analytics dashboard with per-user scoping.
+**Observability** — Prometheus metrics (request latency histograms, error counters, circuit state gauges, session cache hit rates), AlertManager rules (error rate, circuit open, auth spikes, latency).
 
 **Concurrency** — asyncio event loop with semaphore-based limiting at three levels: 2000 global, 10 per-user, 200 per-service. Background tasks for cleanup (sessions, tokens, rate limits, audit pruning) run on 60-300 second intervals with error isolation.
 
@@ -273,16 +269,6 @@ All settings use the `ASIBOT_` prefix. Set via environment variables or `.env` f
 | `ASIBOT_GITHUB_CLIENT_ID` | | GitHub OAuth App client ID |
 | `ASIBOT_GOOGLE_CLIENT_ID` | | Google OAuth client ID |
 | `ASIBOT_GOOGLE_CLIENT_SECRET` | | Google OAuth client secret |
-
-### Dashboard
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASIBOT_DASHBOARD_ENABLED` | `true` | Enable analytics dashboard |
-| `ASIBOT_DASHBOARD_PORT` | `8081` | Dashboard listen port |
-| `ASIBOT_DASHBOARD_BEARER_TOKEN` | | Fixed admin token (auto-generated if empty) |
-| `ASIBOT_DASHBOARD_TOKEN_TTL` | `86400` | Per-user token TTL in seconds (24h) |
-| `ASIBOT_DASHBOARD_MIN_ROLE` | `user` | Minimum role to access dashboard |
 
 ### Database & Sessions
 
